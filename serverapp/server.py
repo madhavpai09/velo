@@ -9,7 +9,8 @@ from sqlalchemy.orm import sessionmaker, Session
 from database.connections import SessionLocal, engine
 from database.models import Base, RideRequest, DriverInfo, MatchedRide
 from models.schemas import RideCreate, DriverCreate, UpdateMatchPayload
-from api.routes import router as api_router  # Add this import
+from api.routes import router as api_router
+from pydantic import BaseModel
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="Orchestrator Server")
@@ -24,13 +25,69 @@ def get_db():
     finally:
         db.close()
 
+# Schema for driver registration
+class DriverRegister(BaseModel):
+    driver_id: str
+    name: str
+    port: int
+    location: dict
+
 @app.get("/")
 def health():
     return {"message": "Orchestrator running on port 8000"}
 
+@app.post("/driver/register")
+def register_driver(driver: DriverRegister, db: Session = Depends(get_db)):
+    """Register a new driver with the dispatch system"""
+    try:
+        # Extract numeric ID from DRIVER-XXXX format
+        numeric_id = int(driver.driver_id.replace("DRIVER-", ""))
+        
+        # Check if driver already exists
+        existing = db.query(DriverInfo).filter(
+            DriverInfo.driver_id == numeric_id
+        ).first()
+        
+        location_str = f"{driver.location['lat']},{driver.location['lng']}"
+        
+        if existing:
+            # Update existing driver
+            existing.available = True
+            existing.current_location = location_str
+            message = "Driver re-registered successfully"
+        else:
+            # Create new driver
+            new_driver = DriverInfo(
+                driver_id=numeric_id,
+                available=True,
+                current_location=location_str
+            )
+            db.add(new_driver)
+            message = "Driver registered successfully"
+        
+        db.commit()
+        
+        print(f"✅ {message}: {driver.driver_id} (Port: {driver.port})")
+        
+        return {
+            "message": message,
+            "driver_id": driver.driver_id,
+            "status": "available",
+            "location": location_str
+        }
+    except Exception as e:
+        print(f"❌ Driver registration failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
+
 @app.post("/ride/")
 def create_ride(ride: RideCreate, db: Session = Depends(get_db)):
-    new = RideRequest(**ride.model_dump())
+    # Map 'pickup' and 'drop' to 'source_location' and 'dest_location'
+    new = RideRequest(
+        user_id=ride.user_id,
+        source_location=ride.pickup,
+        dest_location=ride.drop,
+        status="pending"
+    )
     db.add(new)
     db.commit()
     db.refresh(new)

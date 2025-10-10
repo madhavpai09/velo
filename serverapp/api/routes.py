@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from models.schemas import PingRequest, RideRequest as RideRequestSchema, RideRequestResponse, RideRequestCreate
 from database.connections import get_db
-from database.models import RideRequest as RideRequestModel
+from database.models import RideRequest as RideRequestModel, DriverInfo
 from typing import List
 import datetime
 
@@ -122,3 +122,50 @@ def get_ride_request(ride_id: int, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         return {"error": f"Could not fetch ride request: {e}"}
+
+@router.get("/drivers/available")
+def get_available_drivers(db: Session = Depends(get_db)):
+    """Get all available drivers"""
+    try:
+        if db is None:
+            return {"message": "Database not connected", "drivers": []}
+        
+        available_drivers = db.query(DriverInfo).filter(DriverInfo.available == True).all()
+        
+        return {
+            "count": len(available_drivers),
+            "drivers": [
+                {
+                    "id": driver.id,
+                    "driver_id": driver.driver_id,
+                    "current_location": driver.current_location,
+                    "available": driver.available
+                }
+                for driver in available_drivers
+            ]
+        }
+    except Exception as e:
+        return {"error": f"Could not fetch available drivers: {e}", "drivers": []}
+
+@router.get("/drivers/{driver_id}")
+def get_driver(driver_id: int, db: Session = Depends(get_db)):
+    """Get a specific driver by ID"""
+    try:
+        if db is None:
+            return {"message": f"Would fetch driver {driver_id} from database"}
+        
+        driver = db.query(DriverInfo).filter(DriverInfo.driver_id == driver_id).first()
+        
+        if not driver:
+            raise HTTPException(status_code=404, detail="Driver not found")
+        
+        return {
+            "id": driver.id,
+            "driver_id": driver.driver_id,
+            "current_location": driver.current_location,
+            "available": driver.available
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"error": f"Could not fetch driver: {e}"}

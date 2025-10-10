@@ -60,6 +60,9 @@ class MiniUberDriverClient:
             self.current_location = location
             self.update_location(location)
             return {"message": "Location updated", "location": location}
+        
+
+        
     
     def register(self) -> dict:
         """Register driver with dispatch server"""
