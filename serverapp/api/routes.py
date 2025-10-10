@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from models.schemas import PingRequest, RideRequest, RideRequestResponse, RideRequestCreate
-from database.connection import get_db
-from database.models import RideRequestDB
+from models.schemas import PingRequest, RideRequest as RideRequestSchema, RideRequestResponse, RideRequestCreate
+from database.connections import get_db
+from database.models import RideRequest as RideRequestModel
 from typing import List
 import datetime
 
@@ -16,10 +16,9 @@ def ping(request: PingRequest):
     return {"error": "invalid data"}
 
 @router.post("/ride-request", response_model=dict)
-def create_ride_request(ride_request: RideRequest, db: Session = Depends(get_db)):
+def create_ride_request(ride_request: RideRequestSchema, db: Session = Depends(get_db)):
     """
     Create a new ride request
-    Accepts: source_location, dest_location, user_id
     """
     try:
         if db is None:
@@ -29,11 +28,10 @@ def create_ride_request(ride_request: RideRequest, db: Session = Depends(get_db)
             print(f"📍 Destination: {ride_request.dest_location}")
             print(f"👤 User ID: {ride_request.user_id}")
             print(f"⏰ Timestamp: {datetime.datetime.now()}")
-            
             return {
                 "message": "Ride request received (simulated)",
                 "data": {
-                    "id": 999,  # Mock ID
+                    "id": 999,
                     "source_location": ride_request.source_location,
                     "dest_location": ride_request.dest_location,
                     "user_id": ride_request.user_id,
@@ -43,19 +41,17 @@ def create_ride_request(ride_request: RideRequest, db: Session = Depends(get_db)
             }
         
         # Create new ride request in database
-        db_ride_request = RideRequestDB(
+        db_ride_request = RideRequestModel(
             source_location=ride_request.source_location,
             dest_location=ride_request.dest_location,
             user_id=ride_request.user_id,
             status="pending"
         )
-        
         db.add(db_ride_request)
         db.commit()
         db.refresh(db_ride_request)
         
         print(f"✅ Ride request saved to Postgres with ID: {db_ride_request.id}")
-        
         return {
             "message": "Ride request created successfully",
             "data": {
@@ -67,14 +63,8 @@ def create_ride_request(ride_request: RideRequest, db: Session = Depends(get_db)
                 "created_at": db_ride_request.created_at.isoformat()
             }
         }
-        
     except Exception as e:
         print(f"❌ Error creating ride request: {e}")
-        print("📝 We will store this data in Postgres now")
-        print(f"📍 Source: {ride_request.source_location}")
-        print(f"📍 Destination: {ride_request.dest_location}")
-        print(f"👤 User ID: {ride_request.user_id}")
-        
         return {
             "message": "Ride request received (database error)",
             "error": str(e),
@@ -92,9 +82,8 @@ def get_ride_requests(db: Session = Depends(get_db)):
     try:
         if db is None:
             return [{"message": "Database not connected - no ride requests to show"}]
-            
-        ride_requests = db.query(RideRequestDB).all()
         
+        ride_requests = db.query(RideRequestModel).all()
         return [
             {
                 "id": req.id,
@@ -106,7 +95,6 @@ def get_ride_requests(db: Session = Depends(get_db)):
             }
             for req in ride_requests
         ]
-        
     except Exception as e:
         return [{"error": f"Could not fetch ride requests: {e}"}]
 
@@ -116,12 +104,12 @@ def get_ride_request(ride_id: int, db: Session = Depends(get_db)):
     try:
         if db is None:
             return {"message": f"Would fetch ride request {ride_id} from Postgres"}
-            
-        ride_request = db.query(RideRequestDB).filter(RideRequestDB.id == ride_id).first()
+        
+        ride_request = db.query(RideRequestModel).filter(RideRequestModel.id == ride_id).first()
         
         if not ride_request:
             raise HTTPException(status_code=404, detail="Ride request not found")
-            
+        
         return {
             "id": ride_request.id,
             "source_location": ride_request.source_location,
@@ -130,7 +118,6 @@ def get_ride_request(ride_id: int, db: Session = Depends(get_db)):
             "status": ride_request.status,
             "created_at": ride_request.created_at.isoformat()
         }
-        
     except HTTPException:
         raise
     except Exception as e:
