@@ -26,19 +26,41 @@ class MiniUberDriverClient:
         @self.app.post("/ride/assigned")
         async def receive_ride_assignment(assignment: dict):
             """Receive ride assignment from dispatch server"""
-            print(f"\n🔔 New Ride Assigned!")
+            print(f"\n{'='*60}")
+            print(f"🚨 New Ride Assigned!")
+            print(f"{'='*60}")
             print(f"   Ride ID: {assignment.get('ride_id')}")
-            print(f"   User: {assignment.get('user_id')}")
+            print(f"   User ID: {assignment.get('user_id')}")
             print(f"   Pickup: {assignment.get('pickup_location')}")
             print(f"   Dropoff: {assignment.get('dropoff_location')}")
+            print(f"{'='*60}")
             
             self.current_ride = assignment
             self.is_available = False
             
-            # Auto-accept the ride (you can make this manual)
+            # Auto-accept the ride
             ride_id = assignment.get('ride_id')
             print(f"\n✅ Auto-accepting ride {ride_id}...")
             self.update_ride_status(ride_id, "accepted")
+            
+            # Auto-start the ride after 2 seconds
+            print(f"🚗 Auto-starting ride in 2 seconds...")
+            import asyncio
+            await asyncio.sleep(2)
+            self.update_ride_status(ride_id, "in_progress")
+            
+            # Auto-complete the ride after 5 seconds
+            print(f"⏳ Ride will complete in 5 seconds...")
+            await asyncio.sleep(5)
+            print(f"\n🏁 Completing ride {ride_id}...")
+            self.update_ride_status(ride_id, "completed")
+            
+            # Reset state and become available again
+            self.current_ride = None
+            self.is_available = True
+            result = self.set_availability(True)
+            print(f"✅ Driver is now available for next ride!")
+            print(f"{'='*60}\n")
             
             return {"message": "Ride assignment received", "status": "accepted"}
         
@@ -60,9 +82,6 @@ class MiniUberDriverClient:
             self.current_location = location
             self.update_location(location)
             return {"message": "Location updated", "location": location}
-        
-
-        
     
     def register(self) -> dict:
         """Register driver with dispatch server"""
@@ -75,7 +94,7 @@ class MiniUberDriverClient:
                 "is_available": self.is_available
             }
             
-            print(f"\n📝 Registering driver with dispatch server...")
+            print(f"\n🚀 Registering driver with dispatch server...")
             print(f"   Driver ID: {self.driver_id}")
             print(f"   Name: {self.driver_name}")
             print(f"   Port: {self.driver_port}")
@@ -130,7 +149,7 @@ class MiniUberDriverClient:
             response.raise_for_status()
             
             status = "available" if is_available else "unavailable"
-            print(f"\n📊 Driver status changed to: {status}")
+            print(f"📊 Driver status changed to: {status}")
             return response.json()
             
         except requests.RequestException as e:
@@ -148,14 +167,10 @@ class MiniUberDriverClient:
             
             print(f"📊 Ride {ride_id} status updated to: {status}")
             
-            # If ride completed, become available again
-            if status == "completed":
-                self.current_ride = None
-                self.set_availability(True)
-            
             return response.json()
             
         except requests.RequestException as e:
+            print(f"⚠️  Failed to update ride status: {e}")
             return {"error": f"Failed to update ride status: {e}"}
     
     def start_ride(self) -> dict:
@@ -174,20 +189,31 @@ class MiniUberDriverClient:
         
         ride_id = self.current_ride.get('ride_id')
         print(f"\n🏁 Completing ride {ride_id}...")
-        return self.update_ride_status(ride_id, "completed")
+        result = self.update_ride_status(ride_id, "completed")
+        
+        # Reset state
+        self.current_ride = None
+        self.set_availability(True)
+        
+        return result
     
     def run(self):
         """Start the driver client server"""
         # First register with dispatch server
         self.register()
         
-        print(f"\n🚀 Starting Driver Client: {self.driver_id}")
-        print(f"👤 Driver Name: {self.driver_name}")
-        print(f"📡 Listening on port: {self.driver_port}")
-        print(f"🔗 Connected to dispatch server: {self.dispatch_url}")
-        print(f"📍 Initial Location: {self.current_location}")
-        print(f"✅ Status: {'Available' if self.is_available else 'Unavailable'}")
-        print(f"\nWaiting for ride assignments...")
+        print(f"\n{'='*60}")
+        print(f"🚀 Driver Client Started")
+        print(f"{'='*60}")
+        print(f"   Driver ID: {self.driver_id}")
+        print(f"   Driver Name: {self.driver_name}")
+        print(f"   Port: {self.driver_port}")
+        print(f"   Connected to: {self.dispatch_url}")
+        print(f"   Location: {self.current_location}")
+        print(f"   Status: {'✅ Available' if self.is_available else '🔴 Unavailable'}")
+        print(f"{'='*60}")
+        print(f"\n⏳ Waiting for ride assignments...")
+        print(f"   (Will auto-complete rides after 5 seconds)\n")
         
         uvicorn.run(self.app, host="0.0.0.0", port=self.driver_port)
 

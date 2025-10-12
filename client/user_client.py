@@ -1,51 +1,86 @@
 import requests
+from fastapi import FastAPI
+import uvicorn
 import json
-from typing import Optional
+import sys
+import signal
 
 class MiniUberClient:
-    """
-    Updated client that works with YOUR existing server
-    Can run on different ports: 7000, 7001, 7002, etc.
-    """
+    """User client that stays online waiting for ride assignment"""
+    
     def __init__(self, base_url: str = "http://localhost:8000", user_id: int = None, client_port: int = 7000):
         self.base_url = base_url
         self.api_url = f"{base_url}/api"
-        self.user_id = user_id or client_port  # Use port as user_id if not provided
+        self.user_id = user_id or client_port
         self.client_port = client_port
+        self.ride_assigned = False
+        self.current_ride = None
         
-    def ping(self) -> dict:
-        """Test ping endpoint - YOUR EXISTING ENDPOINT"""
-        try:
-            response = requests.post(
-                f"{self.api_url}/ping",
-                json={"data": "ping"},
-                timeout=10
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            return {"error": f"Ping failed: {e}"}
+        # Create FastAPI app for receiving notifications
+        self.app = FastAPI(title=f"User Client {self.user_id}")
+        self.setup_routes()
     
-    def create_ride_request(self, source_location: str, dest_location: str, user_id: int = None) -> dict:
-        """
-        Create a new ride request - YOUR EXISTING ENDPOINT
-        Now enhanced to automatically assign drivers!
-        """
-        try:
-            # Use instance user_id if not provided
-            uid = user_id or self.user_id
+    def setup_routes(self):
+        """Setup routes for receiving ride assignments"""
+        
+        @self.app.post("/ride/assigned")
+        async def receive_ride_assignment(assignment: dict):
+            """Receive ride assignment from notifier"""
+            print("\n" + "="*60)
+            print("🎉 RIDE ASSIGNED!")
+            print("="*60)
+            print(f"   Ride ID: {assignment.get('ride_id')}")
+            print(f"   Driver ID: {assignment.get('driver_id')}")
+            print(f"   Driver Name: {assignment.get('driver_name', 'Unknown')}")
+            print(f"   Driver Location: {assignment.get('driver_location')}")
+            print(f"   Pickup: {assignment.get('pickup_location')}")
+            print(f"   Dropoff: {assignment.get('dropoff_location')}")
+            print("="*60)
             
+            self.current_ride = assignment
+            self.ride_assigned = True
+            
+            # Terminate after receiving assignment
+            print("\n✅ Ride assignment received. Client will terminate in 2 seconds...")
+            
+            # Schedule shutdown
+            import asyncio
+            asyncio.create_task(self.shutdown_after_delay(2))
+            
+            return {"message": "Ride assignment received", "status": "accepted"}
+        
+        @self.app.get("/status")
+        async def get_status():
+            """Health check endpoint"""
+            return {
+                "user_id": self.user_id,
+                "port": self.client_port,
+                "ride_assigned": self.ride_assigned,
+                "current_ride": self.current_ride
+            }
+    
+    async def shutdown_after_delay(self, delay: int):
+        """Shutdown server after delay"""
+        import asyncio
+        await asyncio.sleep(delay)
+        print("\n👋 Shutting down user client...")
+        # Exit the process
+        import os
+        os._exit(0)
+    
+    def create_ride_request(self, source_location: str, dest_location: str) -> dict:
+        """Create a new ride request"""
+        try:
             payload = {
                 "source_location": source_location,
                 "dest_location": dest_location,
-                "user_id": uid
+                "user_id": self.user_id
             }
             
             print(f"\n🚗 Creating ride request...")
             print(f"📍 From: {source_location}")
             print(f"📍 To: {dest_location}")
-            print(f"👤 User ID: {uid}")
-            print(f"🔌 Client Port: {self.client_port}")
+            print(f"👤 User ID: {self.user_id}")
             
             response = requests.post(
                 f"{self.api_url}/ride-request",
@@ -57,17 +92,10 @@ class MiniUberClient:
             
             result = response.json()
             
-            # Check if driver was assigned
-            if result.get("status") == "success":
-                if "driver" in result:
-                    print(f"\n✅ Ride created and driver assigned!")
-                    print(f"   Ride ID: {result.get('ride_id')}")
-                    print(f"   Driver: {result['driver'].get('name')} (ID: {result['driver'].get('id')})")
-                    print(f"   Driver Location: {result['driver'].get('location')}")
-                else:
-                    print(f"\n✅ Ride created but no drivers available yet")
-                    print(f"   Ride ID: {result.get('ride_id')}")
-                    print(f"   Status: Waiting for driver...")
+            if result.get("message"):
+                print(f"\n✅ {result.get('message')}")
+                if result.get("data", {}).get("id"):
+                    print(f"   Ride Request ID: {result['data']['id']}")
             
             return result
             
@@ -76,133 +104,49 @@ class MiniUberClient:
             print(f"❌ {error_msg}")
             return {"error": error_msg}
     
-    def get_ride_requests(self) -> dict:
-        """Get all ride requests - YOUR EXISTING ENDPOINT"""
-        try:
-            response = requests.get(
-                f"{self.api_url}/ride-requests",
-                timeout=10
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            return {"error": f"Failed to fetch ride requests: {e}"}
-    
-    def get_ride_request(self, ride_id: int) -> dict:
-        """Get a specific ride request - YOUR EXISTING ENDPOINT"""
-        try:
-            response = requests.get(
-                f"{self.api_url}/ride-request/{ride_id}",
-                timeout=10
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            return {"error": f"Failed to fetch ride request: {e}"}
-    
-    # NEW METHODS for multi-client features
-    
-    def get_available_drivers(self) -> dict:
-        """Get list of available drivers - NEW ENDPOINT"""
-        try:
-            response = requests.get(
-                f"{self.api_url}/drivers/available",
-                timeout=10
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            return {"error": f"Failed to fetch drivers: {e}"}
-    
-    def get_all_drivers(self) -> dict:
-        """Get all registered drivers - NEW ENDPOINT"""
-        try:
-            response = requests.get(
-                f"{self.api_url}/drivers",
-                timeout=10
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            return {"error": f"Failed to fetch drivers: {e}"}
-    
-    def get_ride_assignment(self, ride_assignment_id: str) -> dict:
-        """Get ride assignment details - NEW ENDPOINT"""
-        try:
-            response = requests.get(
-                f"{self.api_url}/ride-assignment/{ride_assignment_id}",
-                timeout=10
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            return {"error": f"Failed to fetch ride assignment: {e}"}
-
-
-def interactive_mode(client: MiniUberClient):
-    """Interactive mode for testing"""
-    print("\n" + "="*60)
-    print(f"🚕 Mini Uber User Client - Port {client.client_port}")
-    print(f"👤 User ID: {client.user_id}")
-    print("="*60)
-    
-    while True:
-        print("\n📋 Menu:")
-        print("1. Request a ride")
-        print("2. View all my ride requests")
-        print("3. View specific ride request")
-        print("4. View available drivers")
-        print("5. View all drivers")
-        print("6. Test ping")
-        print("7. Exit")
+    def run(self, source_location: str, dest_location: str):
+        """Create ride request and stay online waiting for assignment"""
         
-        choice = input("\n👉 Enter choice (1-7): ").strip()
+        print("\n" + "="*60)
+        print(f"🚕 Mini Uber User Client Started")
+        print("="*60)
+        print(f"   User ID: {self.user_id}")
+        print(f"   Port: {self.client_port}")
+        print(f"   Server: {self.base_url}")
+        print("="*60)
         
-        if choice == "1":
-            source = input("📍 Enter pickup location: ").strip()
-            dest = input("📍 Enter dropoff location: ").strip()
-            result = client.create_ride_request(source, dest)
-            print(f"\n{json.dumps(result, indent=2)}")
-            
-        elif choice == "2":
-            result = client.get_ride_requests()
-            print(f"\n{json.dumps(result, indent=2)}")
-            
-        elif choice == "3":
-            ride_id = int(input("🔢 Enter ride ID: "))
-            result = client.get_ride_request(ride_id)
-            print(f"\n{json.dumps(result, indent=2)}")
-            
-        elif choice == "4":
-            result = client.get_available_drivers()
-            print(f"\n{json.dumps(result, indent=2)}")
-            
-        elif choice == "5":
-            result = client.get_all_drivers()
-            print(f"\n{json.dumps(result, indent=2)}")
-            
-        elif choice == "6":
-            result = client.ping()
-            print(f"\n{json.dumps(result, indent=2)}")
-            
-        elif choice == "7":
-            print("\n👋 Goodbye!")
-            break
-        else:
-            print("❌ Invalid choice")
+        # Create ride request
+        result = self.create_ride_request(source_location, dest_location)
+        
+        if "error" in result:
+            print("\n❌ Failed to create ride request. Exiting...")
+            return
+        
+        # Start server and wait for assignment
+        print("\n⏳ Waiting for driver assignment...")
+        print("   (Listening on port {})".format(self.client_port))
+        print("   (Will auto-terminate once ride is assigned)")
+        print("\n" + "="*60 + "\n")
+        
+        # Run the FastAPI server - blocks here until ride assigned
+        uvicorn.run(self.app, host="0.0.0.0", port=self.client_port, log_level="error")
 
 
 def main():
-    """Demo usage - can specify port and user_id"""
+    """Main function"""
     import argparse
     
     parser = argparse.ArgumentParser(description='Mini Uber User Client')
     parser.add_argument('--port', type=int, default=7000, help='Client port (default: 7000)')
     parser.add_argument('--user-id', type=int, help='User ID (default: port number)')
     parser.add_argument('--server', type=str, default='http://localhost:8000', 
-                       help='Server URL (default: http://localhost:8000)')
-    parser.add_argument('--interactive', action='store_true', 
-                       help='Run in interactive mode')
+                       help='Server URL')
+    parser.add_argument('--from', dest='source', type=str, 
+                       default='123 Main St, Chennai',
+                       help='Pickup location')
+    parser.add_argument('--to', dest='dest', type=str,
+                       default='456 Park Ave, Chennai',
+                       help='Dropoff location')
     
     args = parser.parse_args()
     
@@ -213,34 +157,8 @@ def main():
         client_port=args.port
     )
     
-    if args.interactive:
-        # Run interactive mode
-        interactive_mode(client)
-    else:
-        # Run demo
-        print(f"=== Mini Uber Client Demo (Port {args.port}) ===")
-        
-        # Test ping
-        print("\n=== Testing Ping ===")
-        ping_result = client.ping()
-        print(f"Ping result: {ping_result}")
-        
-        # Check available drivers
-        print("\n=== Checking Available Drivers ===")
-        drivers = client.get_available_drivers()
-        print(f"Available drivers: {drivers}")
-        
-        # Test ride request creation
-        print("\n=== Testing Ride Request Creation ===")
-        ride_result = client.create_ride_request(
-            source_location="123 Main St, Chennai",
-            dest_location="456 Park Ave, Chennai"
-        )
-        
-        # Test getting all ride requests
-        print("\n=== Getting All Ride Requests ===")
-        all_rides = client.get_ride_requests()
-        print(f"All rides: {all_rides}")
+    # Run client (will terminate after ride assignment)
+    client.run(args.source, args.dest)
 
 
 if __name__ == "__main__":
