@@ -107,21 +107,64 @@ async def notifier_loop():
                     except Exception as e:
                         print(f"   ⚠️  Could not notify user client on port {user_port}: {e}")
                     
-                    # 3. Notify driver client
-                    try:
-                        requests.post(
-                            f"http://localhost:{driver_port}/ride/assigned",
-                            json={
-                                "ride_id": ride.id,
-                                "user_id": match.user_id,
-                                "pickup_location": ride.source_location,
-                                "dropoff_location": ride.dest_location
-                            },
-                            timeout=2
-                        )
-                        print(f"   ✅ Driver client notified on port {driver_port}")
-                    except Exception as e:
-                        print(f"   ⚠️  Could not notify driver client on port {driver_port}: {e}")
+                    # 3. Notify driver client (with retry and health check)
+                    driver_notified = False
+                    for attempt in range(3):  # Try 3 times
+                        try:
+                            # First check if driver is still online
+                            health_check = requests.get(
+                                f"http://localhost:{driver_port}/status",
+                                timeout=1
+                            )
+                            
+                            if health_check.status_code != 200:
+                                print(f"   ⚠️  Driver {driver_port} health check failed (attempt {attempt+1}/3)")
+                                await asyncio.sleep(1)
+                                continue
+                            
+                            # Driver is online, send notification
+                            response = requests.post(
+                                f"http://localhost:{driver_port}/ride/assigned",
+                                json={
+                                    "ride_id": ride.id,
+                                    "user_id": match.user_id,
+                                    "pickup_location": ride.source_location,
+                                    "dropoff_location": ride.dest_location
+                                },
+                                timeout=5  # Increased timeout
+                            )
+                            
+                            if response.status_code == 200:
+                                print(f"   ✅ Driver client notified on port {driver_port}")
+                                driver_notified = True
+                                break
+                            else:
+                                print(f"   ⚠️  Driver responded with status {response.status_code} (attempt {attempt+1}/3)")
+                                
+                        except requests.exceptions.Timeout:
+                            print(f"   ⚠️  Driver {driver_port} timed out (attempt {attempt+1}/3)")
+                            await asyncio.sleep(1)
+                        except requests.exceptions.ConnectionError:
+                            print(f"   ⚠️  Driver {driver_port} connection refused - driver is OFFLINE (attempt {attempt+1}/3)")
+                            await asyncio.sleep(1)
+                        except Exception as e:
+                            print(f"   ⚠️  Could not notify driver on port {driver_port}: {e} (attempt {attempt+1}/3)")
+                            await asyncio.sleep(1)
+                    
+                    if not driver_notified:
+                        print(f"   ❌ FAILED to notify driver {driver_port} after 3 attempts")
+                        print(f"   📌 Marking driver {match.driver_id} as unavailable in database")
+                        
+                        # Mark driver as unavailable
+                        driver.available = False
+                        
+                        # Re-queue the ride by changing status back to pending
+                        ride.status = "pending"
+                        
+                        # Don't delete the match - let it retry
+                        db.commit()
+                        print(f"   🔄 Ride {ride.id} re-queued for another driver")
+                        continue  # Skip deletion
                     
                     # Delete the match after successful notification
                     db.delete(match)
@@ -191,6 +234,64 @@ def debug_matches(db: Session = Depends(get_db)):
     }
 
 
+@app.get("/debug/active-clients")
+def check_active_clients(db: Session = Depends(get_db)):
+    """Check which clients (users and drivers) are actually running"""
+    results = {
+        "drivers": [],
+        "users": []
+    }
+    
+    # Check drivers
+    drivers = db.query(DriverInfo).all()
+    for driver in drivers:
+        port = driver.driver_id
+        try:
+            resp = requests.get(f"http://localhost:{port}/status", timeout=1)
+            results["drivers"].append({
+                "driver_id": driver.driver_id,
+                "port": port,
+                "online": True,
+                "available": resp.json().get("is_available", False)
+            })
+        except:
+            results["drivers"].append({
+                "driver_id": driver.driver_id,
+                "port": port,
+                "online": False,
+                "available": False
+            })
+    
+    # Check users from recent rides
+    rides = db.query(RideRequest).limit(10).all()
+    checked_users = set()
+    for ride in rides:
+        if ride.user_id not in checked_users:
+            checked_users.add(ride.user_id)
+            port = ride.user_id
+            try:
+                resp = requests.get(f"http://localhost:{port}/status", timeout=1)
+                results["users"].append({
+                    "user_id": ride.user_id,
+                    "port": port,
+                    "online": True
+                })
+            except:
+                results["users"].append({
+                    "user_id": ride.user_id,
+                    "port": port,
+                    "online": False
+                })
+    
+    return results
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+    print("\n" + "="*60)
+    print("📢 Mini Uber Notifier Service")
+    print("="*60)
+    print("   Port: 8002")
+    print("   Checking for matches every 3 seconds")
+    print("="*60 + "\n")
+    uvicorn.run(app, host="0.0.0.0", port=8002, log_level="warning")
