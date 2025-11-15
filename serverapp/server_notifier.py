@@ -37,7 +37,7 @@ async def notifier_loop():
                     print(".", end="", flush=True)  # Show heartbeat
                 
                 for match in unnotified_matches:
-                    print(f"\n🔔 Processing match ID: {match.id}")
+                    print(f"\n📝 Processing match ID: {match.id}")
                     print(f"   User ID: {match.user_id}")
                     print(f"   Driver ID: {match.driver_id}")
                     
@@ -55,6 +55,15 @@ async def notifier_loop():
                     if not ride or not driver:
                         print(f"   ⚠️  Missing ride or driver info")
                         continue
+                    
+                    # FIXED: Port mapping logic
+                    # User port is the user_id itself (since user_id defaults to port in user_client.py)
+                    user_port = match.user_id
+                    
+                    # Driver port is the driver_id itself (since it's extracted from port in driver_client.py)
+                    driver_port = match.driver_id
+                    
+                    print(f"   🔌 User port: {user_port}, Driver port: {driver_port}")
                     
                     # Prepare notification data
                     match_data = {
@@ -80,8 +89,7 @@ async def notifier_loop():
                     except Exception as e:
                         print(f"   ⚠️  Could not notify orchestrator: {e}")
                     
-                    # 2. Notify user client (port based on user_id)
-                    user_port = match.user_id if match.user_id >= 6000 else 6000
+                    # 2. Notify user client
                     try:
                         requests.post(
                             f"http://localhost:{user_port}/ride/assigned",
@@ -99,8 +107,7 @@ async def notifier_loop():
                     except Exception as e:
                         print(f"   ⚠️  Could not notify user client on port {user_port}: {e}")
                     
-                    # 3. Notify driver client (port based on driver_id)
-                    driver_port = match.driver_id if match.driver_id >= 9000 else 9000
+                    # 3. Notify driver client
                     try:
                         requests.post(
                             f"http://localhost:{driver_port}/ride/assigned",
@@ -160,8 +167,6 @@ def get_stats(db: Session = Depends(get_db)):
     """Get notification statistics"""
     pending = db.query(MatchedRide).filter(MatchedRide.status == "pending_notification").count()
     
-    # Count notified matches from orchestrator's matched_rides table
-    # Since we delete after notification, we check orchestrator's records
     return {
         "pending_notifications": pending,
         "note": "Matches are deleted after successful notification"
