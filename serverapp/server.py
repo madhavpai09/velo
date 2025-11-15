@@ -11,12 +11,23 @@ from database.models import Base, RideRequest, DriverInfo, MatchedRide
 from models.schemas import RideCreate, DriverCreate, UpdateMatchPayload
 from api.routes import router as api_router
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="Orchestrator Server")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5174", "http://localhost:5173"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Include the API router with /api prefix
 app.include_router(api_router, prefix="/api")
+
+
 
 def get_db():
     db = SessionLocal()
@@ -35,6 +46,33 @@ class DriverRegister(BaseModel):
 @app.get("/")
 def health():
     return {"message": "Orchestrator running on port 8000"}
+
+@app.get("/api/ride-request/{ride_id}")
+def get_ride_request(ride_id: int, db: Session = Depends(get_db)):
+    """Get a specific ride request by ID"""
+    try:
+        ride_request = db.query(RideRequest).filter(RideRequest.id == ride_id).first()
+        
+        if not ride_request:
+            raise HTTPException(status_code=404, detail="Ride request not found")
+        
+        # Get matched driver if exists
+        matched = db.query(MatchedRide).filter(MatchedRide.user_id == ride_request.user_id).first()
+        driver_id = matched.driver_id if matched else None
+        
+        return {
+            "id": ride_request.id,
+            "source_location": ride_request.source_location,
+            "dest_location": ride_request.dest_location,
+            "user_id": ride_request.user_id,
+            "status": ride_request.status,
+            "created_at": ride_request.created_at.isoformat(),
+            "driver_id": driver_id  # Add this line
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"error": f"Could not fetch ride request: {e}"}
 
 @app.post("/driver/register")
 def register_driver(driver: DriverRegister, db: Session = Depends(get_db)):
@@ -130,7 +168,7 @@ def update_ride_status(ride_id: int, status: str, db: Session = Depends(get_db))
         
         print(f"📊 Ride {ride_id} status: {old_status} → {status}")
         
-        # If ride completed, mark driver as available
+        # If ride completed, mark driver as available AND clean up match
         if status == "completed":
             # Find the matched ride to get driver_id
             matched = db.query(MatchedRide).filter(
@@ -145,7 +183,14 @@ def update_ride_status(ride_id: int, status: str, db: Session = Depends(get_db))
                 if driver:
                     driver.available = True
                     db.commit()
-                    print(f"✅ Driver {matched.driver_id} is now available")
+                    print(f"✅ Driver {matched.driver_id} marked as AVAILABLE")
+                
+                # DELETE the match record so driver can be matched again
+                db.delete(matched)
+                db.commit()
+                print(f"🗑️  Match record DELETED for driver {matched.driver_id}")
+            else:
+                print(f"⚠️  No match record found for ride {ride_id}")
         
         return {
             "message": "Ride status updated",

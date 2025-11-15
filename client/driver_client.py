@@ -3,11 +3,12 @@ from fastapi import FastAPI
 import uvicorn
 from typing import Optional
 import json
+import asyncio
 
-class MiniUberDriverClient:
+class VeloDriverClient:
     def __init__(self, dispatch_url: str = "http://localhost:8000", 
                  driver_id: str = None, driver_name: str = None,
-                 driver_port: int = 8001):
+                 driver_port: int = 9000):
         self.dispatch_url = dispatch_url
         self.driver_id = driver_id or f"DRIVER-{driver_port}"
         self.driver_name = driver_name or f"Driver {driver_port}"
@@ -15,9 +16,10 @@ class MiniUberDriverClient:
         self.current_location = {"lat": 0.0, "lng": 0.0}
         self.is_available = True
         self.current_ride = None
+        self.rides_completed = 0
         
         # Create FastAPI app for this driver
-        self.app = FastAPI(title=f"Driver Client {self.driver_id}")
+        self.app = FastAPI(title=f"VELO Driver {self.driver_id}")
         self.setup_routes()
     
     def setup_routes(self):
@@ -38,14 +40,14 @@ class MiniUberDriverClient:
             self.current_ride = assignment
             self.is_available = False
             
-            # Auto-accept the ride
             ride_id = assignment.get('ride_id')
+            
+            # Auto-accept the ride
             print(f"\n✅ Auto-accepting ride {ride_id}...")
             self.update_ride_status(ride_id, "accepted")
             
             # Auto-start the ride after 2 seconds
             print(f"🚗 Auto-starting ride in 2 seconds...")
-            import asyncio
             await asyncio.sleep(2)
             self.update_ride_status(ride_id, "in_progress")
             
@@ -55,11 +57,25 @@ class MiniUberDriverClient:
             print(f"\n🏁 Completing ride {ride_id}...")
             self.update_ride_status(ride_id, "completed")
             
-            # Reset state and become available again
+            # IMPORTANT: Reset state and mark as available
             self.current_ride = None
             self.is_available = True
-            result = self.set_availability(True)
-            print(f"✅ Driver is now available for next ride!")
+            self.rides_completed += 1
+            
+            # Re-register availability with server
+            print(f"🔄 Re-registering as available...")
+            self.set_availability(True)
+            
+            # Verify availability was set
+            await asyncio.sleep(0.5)
+            status = self.check_server_status()
+            if status and status.get('available'):
+                print(f"✅ Driver is now available for next ride! (Completed: {self.rides_completed})")
+            else:
+                print(f"⚠️  Warning: Driver may not be marked as available on server!")
+                # Try again
+                self.set_availability(True)
+            
             print(f"{'='*60}\n")
             
             return {"message": "Ride assignment received", "status": "accepted"}
@@ -73,7 +89,8 @@ class MiniUberDriverClient:
                 "port": self.driver_port,
                 "location": self.current_location,
                 "is_available": self.is_available,
-                "current_ride": self.current_ride
+                "current_ride": self.current_ride,
+                "rides_completed": self.rides_completed
             }
         
         @self.app.post("/location/update")
@@ -94,10 +111,11 @@ class MiniUberDriverClient:
                 "is_available": self.is_available
             }
             
-            print(f"\n🚀 Registering driver with dispatch server...")
+            print(f"\n🚀 Registering driver with VELO dispatch server...")
             print(f"   Driver ID: {self.driver_id}")
             print(f"   Name: {self.driver_name}")
             print(f"   Port: {self.driver_port}")
+            print(f"   Location: {self.current_location}")
             
             response = requests.post(
                 f"{self.dispatch_url}/driver/register",
@@ -108,13 +126,32 @@ class MiniUberDriverClient:
             response.raise_for_status()
             
             result = response.json()
-            print(f"✅ Registration successful!")
+            print(f"✅ Registration successful! Status: {result.get('status')}")
             return result
             
         except requests.RequestException as e:
             error_msg = f"Failed to register driver: {e}"
             print(f"❌ {error_msg}")
             return {"error": error_msg}
+    
+    def check_server_status(self) -> dict:
+        """Check driver status on server"""
+        try:
+            # Extract numeric ID from DRIVER-XXXX format
+            numeric_id = int(self.driver_id.replace("DRIVER-", ""))
+            
+            response = requests.get(
+                f"{self.dispatch_url}/api/drivers/{numeric_id}",
+                timeout=5
+            )
+            
+            if response.ok:
+                return response.json()
+            return None
+            
+        except Exception as e:
+            print(f"⚠️  Could not check server status: {e}")
+            return None
     
     def update_location(self, location: dict) -> dict:
         """Update driver location on dispatch server"""
@@ -131,6 +168,7 @@ class MiniUberDriverClient:
             return response.json()
             
         except requests.RequestException as e:
+            print(f"⚠️  Failed to update location: {e}")
             return {"error": f"Failed to update location: {e}"}
     
     def set_availability(self, is_available: bool) -> dict:
@@ -153,10 +191,11 @@ class MiniUberDriverClient:
             return response.json()
             
         except requests.RequestException as e:
+            print(f"⚠️  Failed to set availability: {e}")
             return {"error": f"Failed to set availability: {e}"}
     
-    def update_ride_status(self, ride_id: str, status: str) -> dict:
-        """Update ride status (accepted, started, completed, etc.)"""
+    def update_ride_status(self, ride_id: int, status: str) -> dict:
+        """Update ride status (accepted, in_progress, completed, etc.)"""
         try:
             response = requests.post(
                 f"{self.dispatch_url}/ride/{ride_id}/update-status",
@@ -166,7 +205,6 @@ class MiniUberDriverClient:
             response.raise_for_status()
             
             print(f"📊 Ride {ride_id} status updated to: {status}")
-            
             return response.json()
             
         except requests.RequestException as e:
@@ -193,6 +231,7 @@ class MiniUberDriverClient:
         
         # Reset state
         self.current_ride = None
+        self.rides_completed += 1
         self.set_availability(True)
         
         return result
@@ -203,7 +242,7 @@ class MiniUberDriverClient:
         self.register()
         
         print(f"\n{'='*60}")
-        print(f"🚀 Driver Client Started")
+        print(f"🚀 VELO Driver Client Started")
         print(f"{'='*60}")
         print(f"   Driver ID: {self.driver_id}")
         print(f"   Driver Name: {self.driver_name}")
@@ -213,15 +252,15 @@ class MiniUberDriverClient:
         print(f"   Status: {'✅ Available' if self.is_available else '🔴 Unavailable'}")
         print(f"{'='*60}")
         print(f"\n⏳ Waiting for ride assignments...")
-        print(f"   (Will auto-complete rides after 5 seconds)\n")
+        print(f"   (Will auto-complete rides after 7 seconds)\n")
         
-        uvicorn.run(self.app, host="0.0.0.0", port=self.driver_port)
+        uvicorn.run(self.app, host="0.0.0.0", port=self.driver_port, log_level="warning")
 
 
-def interactive_mode(driver: MiniUberDriverClient):
+def interactive_mode(driver: VeloDriverClient):
     """Interactive mode for testing driver actions"""
     print("\n" + "="*50)
-    print("🚗 Mini Uber Driver Client - Interactive Mode")
+    print("🚗 VELO Driver Client - Interactive Mode")
     print("="*50)
     
     # Register first
@@ -234,9 +273,11 @@ def interactive_mode(driver: MiniUberDriverClient):
         print("3. Start current ride")
         print("4. Complete current ride")
         print("5. View current status")
-        print("6. Exit")
+        print("6. Check server status")
+        print("7. Re-register driver")
+        print("8. Exit")
         
-        choice = input("\nEnter choice (1-6): ").strip()
+        choice = input("\nEnter choice (1-8): ").strip()
         
         if choice == "1":
             lat = float(input("  Enter latitude: "))
@@ -264,8 +305,17 @@ def interactive_mode(driver: MiniUberDriverClient):
             print(f"   Location: {driver.current_location}")
             print(f"   Available: {driver.is_available}")
             print(f"   Current Ride: {driver.current_ride}")
+            print(f"   Rides Completed: {driver.rides_completed}")
             
         elif choice == "6":
+            status = driver.check_server_status()
+            print(f"\n📊 Server Status: {status}")
+            
+        elif choice == "7":
+            result = driver.register()
+            print(f"\n{result}")
+            
+        elif choice == "8":
             print("\n👋 Goodbye!")
             break
 
@@ -274,22 +324,22 @@ def main():
     """Main function to run driver client"""
     import argparse
     
-    parser = argparse.ArgumentParser(description='Mini Uber Driver Client')
-    parser.add_argument('--port', type=int, default=8001, help='Driver port (default: 8001)')
+    parser = argparse.ArgumentParser(description='VELO Driver Client')
+    parser.add_argument('--port', type=int, default=9000, help='Driver port (default: 9000)')
     parser.add_argument('--driver-id', type=str, help='Driver ID (default: DRIVER-<port>)')
     parser.add_argument('--name', type=str, help='Driver name')
     parser.add_argument('--dispatch', type=str, default='http://localhost:8000', 
                        help='Dispatch server URL')
-    parser.add_argument('--lat', type=float, default=13.0827, 
-                       help='Initial latitude (default: Chennai)')
-    parser.add_argument('--lng', type=float, default=80.2707, 
-                       help='Initial longitude (default: Chennai)')
+    parser.add_argument('--lat', type=float, default=12.9716, 
+                       help='Initial latitude (default: Bangalore)')
+    parser.add_argument('--lng', type=float, default=77.5946, 
+                       help='Initial longitude (default: Bangalore)')
     parser.add_argument('--interactive', action='store_true', 
                        help='Run in interactive mode (no server)')
     
     args = parser.parse_args()
     
-    driver = MiniUberDriverClient(
+    driver = VeloDriverClient(
         dispatch_url=args.dispatch,
         driver_id=args.driver_id,
         driver_name=args.name,
