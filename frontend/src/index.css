@@ -1,17 +1,33 @@
-/* frontend/src/index.css */
-
-/* Tailwind directives (PostCSS must be configured to handle these) */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* small app defaults */
-html, body, #root {
-  height: 100%;
-}
-body {
+* {
   margin: 0;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  height: 100vh;
+  width: 100vw;
+}
+
+/* Leaflet fixes */
+.leaflet-container {
+  height: 100%;
+  width: 100%;
+  z-index: 0;
+}
+
+.leaflet-popup-content-wrapper {
+  border-radius: 8px;
 }
