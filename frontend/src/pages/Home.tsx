@@ -11,6 +11,7 @@ import {
 } from '../utils/api';
 
 interface AssignedDriver {
+  ride_id?: number;
   driver_id: number;
   driver_name: string;
   driver_location: string;
@@ -30,9 +31,20 @@ export default function Home() {
   // NEW: Track assigned driver
   const [assignedDriver, setAssignedDriver] = useState<AssignedDriver | null>(null);
   const [waitingForDriver, setWaitingForDriver] = useState(false);
+  const [isUserOnline, setIsUserOnline] = useState(false);
+  const [userId, setUserId] = useState<number | null>(null);
+  const [showUserIdInput, setShowUserIdInput] = useState(true);
 
   // Bangalore, India coordinates
   const mapCenter: [number, number] = [12.9716, 77.5946];
+
+  // Mark user as online when component mounts
+  useEffect(() => {
+    setIsUserOnline(true);
+    return () => {
+      setIsUserOnline(false);
+    };
+  }, []);
 
   // Fetch drivers periodically
   useEffect(() => {
@@ -41,32 +53,36 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
-  // NEW: Poll for ride status when waiting for driver
+  // Poll for ride status when waiting for driver or when user is online
   useEffect(() => {
-    if (!waitingForDriver || !rideId) return;
+    if (!userId || !isUserOnline) return;
 
     const pollInterval = setInterval(async () => {
       try {
-        const rideStatus = await getRideStatus(rideId);
-        console.log('📊 Ride status:', rideStatus);
-
-        // Check if ride is matched
-        if (rideStatus.status === 'matched' || rideStatus.status === 'accepted') {
-          // Stop polling
-          setWaitingForDriver(false);
+        // Poll for ride status using user ID
+        const response = await fetch(`http://localhost:8000/api/user/${userId}/ride-status`);
+        if (response.ok) {
+          const data = await response.json();
           
-          // Simulate driver assignment (in real app, backend would provide this)
-          // Find the driver from available drivers list
-          const matchedDriver = drivers.find(d => d.driver_id === rideStatus.driver_id);
-          
-          if (matchedDriver) {
-            setAssignedDriver({
-              driver_id: matchedDriver.driver_id,
-              driver_name: `Driver ${matchedDriver.driver_id}`,
-              driver_location: `${matchedDriver.lat},${matchedDriver.lng}`,
-              pickup_location: rideStatus.source_location,
-              dropoff_location: rideStatus.dest_location,
-            });
+          if (data.has_ride) {
+            // Ride has been assigned
+            setWaitingForDriver(false);
+            
+            if (data.status === 'matched' || data.status === 'accepted' || data.status === 'in_progress') {
+              setAssignedDriver({
+                ride_id: data.ride_id,
+                driver_id: data.driver_id,
+                driver_name: `Driver ${data.driver_id}`,
+                driver_location: data.driver_location || 'Unknown',
+                pickup_location: data.pickup_location,
+                dropoff_location: data.dropoff_location,
+              });
+              
+              // Update rideId if we got a new ride
+              if (data.ride_id) {
+                setRideId(data.ride_id);
+              }
+            }
           }
         }
       } catch (error) {
@@ -75,7 +91,7 @@ export default function Home() {
     }, 2000); // Poll every 2 seconds
 
     return () => clearInterval(pollInterval);
-  }, [waitingForDriver, rideId, drivers]);
+  }, [userId, isUserOnline]);
 
   const fetchDrivers = async () => {
     const driverData = await getAvailableDrivers();
@@ -102,7 +118,7 @@ export default function Home() {
       const response = await createRideRequest(
         pickupLocation,
         dropoffLocation,
-        7000
+        userId || 7000
       );
 
       setRideId(response.data.id);
@@ -138,12 +154,28 @@ export default function Home() {
                 <p className="text-sm text-blue-200">Your ride, your way</p>
               </div>
             </div>
-            <button
-              onClick={() => navigate('/ride')}
-              className="bg-white text-blue-600 px-4 py-2 rounded-lg font-semibold hover:bg-blue-50 transition-colors"
-            >
-              View Rides
-            </button>
+            <div className="flex items-center gap-3">
+              {/* User Online Status */}
+              {isUserOnline && userId && (
+                <div className="flex items-center gap-2 bg-white/20 px-4 py-2 rounded-lg">
+                  <div className="w-3 h-3 rounded-full bg-green-400 animate-pulse"></div>
+                  <span className="font-semibold">🟢 User {userId} Online</span>
+                </div>
+              )}
+              <button
+                onClick={() => navigate('/ride')}
+                className="bg-white text-blue-600 px-4 py-2 rounded-lg font-semibold hover:bg-blue-50 transition-colors"
+              >
+                View Rides
+              </button>
+              <button
+                onClick={() => navigate('/')}
+                className="bg-white/20 text-white px-4 py-2 rounded-lg font-semibold hover:bg-white/30 transition-colors"
+                title="Go back to landing page to switch between User and Driver"
+              >
+                Switch Role
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -152,6 +184,60 @@ export default function Home() {
       <div className="flex-1 flex overflow-hidden">
         {/* Sidebar - Ride Form */}
         <div className="w-96">
+          {/* User ID Input */}
+          {showUserIdInput && (
+            <div className="bg-white border-b p-4 shadow-sm">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Your User ID
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  value={userId || ''}
+                  onChange={(e) => setUserId(parseInt(e.target.value) || null)}
+                  placeholder="e.g., 6000, 7000"
+                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                <button
+                  onClick={() => {
+                    if (userId) {
+                      setShowUserIdInput(false);
+                      setIsUserOnline(true);
+                    } else {
+                      alert('Please enter a valid User ID');
+                    }
+                  }}
+                  className="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+                >
+                  Set ID
+                </button>
+              </div>
+              <p className="text-xs text-gray-500 mt-2">
+                Each user needs a unique ID (e.g., 6000, 7000, 8000)
+              </p>
+            </div>
+          )}
+
+          {!showUserIdInput && userId && (
+            <div className="bg-blue-50 border-b p-3 shadow-sm">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm text-gray-600">User ID: </span>
+                  <span className="font-semibold text-blue-600">{userId}</span>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowUserIdInput(true);
+                    setIsUserOnline(false);
+                  }}
+                  className="text-xs text-blue-600 hover:text-blue-800"
+                >
+                  Change
+                </button>
+              </div>
+            </div>
+          )}
+
           <RideForm
             pickupLocation={pickupLocation}
             dropoffLocation={dropoffLocation}

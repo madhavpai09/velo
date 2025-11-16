@@ -23,4 +23,5 @@ class MatchedRide(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False)
     driver_id = Column(Integer, nullable=False)
+    ride_id = Column(Integer, nullable=True)  # Store ride_id for direct lookup
     status = Column(String, default="ongoing")

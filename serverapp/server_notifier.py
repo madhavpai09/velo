@@ -27,6 +27,7 @@ async def notifier_loop():
             db = SessionLocal()
             try:
                 # Find matches that haven't been notified (status = "pending_notification")
+                # Don't process matches that are already accepted/completed
                 unnotified_matches = db.query(MatchedRide).filter(
                     MatchedRide.status == "pending_notification"
                 ).all()
@@ -40,12 +41,20 @@ async def notifier_loop():
                     print(f"\n📝 Processing match ID: {match.id}")
                     print(f"   User ID: {match.user_id}")
                     print(f"   Driver ID: {match.driver_id}")
+                    print(f"   Ride ID: {match.ride_id}")
                     
-                    # Get ride details
-                    ride = db.query(RideRequest).filter(
-                        RideRequest.user_id == match.user_id,
-                        RideRequest.status == "matched"
-                    ).first()
+                    # Get ride details - prefer ride_id if available, otherwise fallback to user_id query
+                    ride = None
+                    if match.ride_id:
+                        ride = db.query(RideRequest).filter(
+                            RideRequest.id == match.ride_id
+                        ).first()
+                    
+                    # Fallback: if ride_id not available or ride not found, try user_id query
+                    if not ride:
+                        ride = db.query(RideRequest).filter(
+                            RideRequest.user_id == match.user_id
+                        ).order_by(RideRequest.created_at.desc()).first()
                     
                     # Get driver details
                     driver = db.query(DriverInfo).filter(
@@ -54,6 +63,15 @@ async def notifier_loop():
                     
                     if not ride or not driver:
                         print(f"   ⚠️  Missing ride or driver info")
+                        if not ride:
+                            print(f"      Ride not found (ride_id: {match.ride_id}, user_id: {match.user_id})")
+                        if not driver:
+                            print(f"      Driver not found (driver_id: {match.driver_id})")
+                        
+                        # Mark match as failed to prevent infinite retries
+                        match.status = "failed"
+                        db.commit()
+                        print(f"   ❌ Marked match {match.id} as failed - will not retry")
                         continue
                     
                     # FIXED: Port mapping logic
@@ -89,69 +107,106 @@ async def notifier_loop():
                     except Exception as e:
                         print(f"   ⚠️  Could not notify orchestrator: {e}")
                     
-                    # 2. Notify user client
+                    # 2. Notify user client (check if web user or Python client)
+                    user_notified = False
+                    is_web_user = False
+                    
                     try:
-                        requests.post(
-                            f"http://localhost:{user_port}/ride/assigned",
-                            json={
-                                "ride_id": ride.id,
-                                "driver_id": match.driver_id,
-                                "driver_name": f"Driver {match.driver_id}",
-                                "driver_location": driver.current_location,
-                                "pickup_location": ride.source_location,
-                                "dropoff_location": ride.dest_location
-                            },
-                            timeout=2
+                        # Try to check if user has a port (Python client)
+                        health_check = requests.get(
+                            f"http://localhost:{user_port}/status",
+                            timeout=0.5
                         )
-                        print(f"   ✅ User client notified on port {user_port}")
-                    except Exception as e:
-                        print(f"   ⚠️  Could not notify user client on port {user_port}: {e}")
+                        if health_check.status_code == 200:
+                            # Python client - try to notify
+                            try:
+                                response = requests.post(
+                                    f"http://localhost:{user_port}/ride/assigned",
+                                    json={
+                                        "ride_id": ride.id,
+                                        "driver_id": match.driver_id,
+                                        "driver_name": f"Driver {match.driver_id}",
+                                        "driver_location": driver.current_location,
+                                        "pickup_location": ride.source_location,
+                                        "dropoff_location": ride.dest_location
+                                    },
+                                    timeout=2
+                                )
+                                if response.status_code == 200:
+                                    print(f"   ✅ User client notified on port {user_port}")
+                                    user_notified = True
+                            except Exception as e:
+                                print(f"   ⚠️  Could not notify user client on port {user_port}: {e}")
+                    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+                        # Port doesn't exist - this is a web user
+                        is_web_user = True
+                        print(f"   ℹ️  User {match.user_id} is a web user (no port) - will poll for assignment")
+                    
+                    # For web users, we keep the match in database and let them poll
+                    if is_web_user:
+                        user_notified = True  # Consider it "notified" since it's in DB for polling
                     
                     # 3. Notify driver client (with retry and health check)
+                    # For web drivers, we'll let them poll for assignments
+                    # For Python clients, try to notify via port
                     driver_notified = False
-                    for attempt in range(3):  # Try 3 times
-                        try:
-                            # First check if driver is still online
-                            health_check = requests.get(
-                                f"http://localhost:{driver_port}/status",
-                                timeout=1
-                            )
-                            
-                            if health_check.status_code != 200:
-                                print(f"   ⚠️  Driver {driver_port} health check failed (attempt {attempt+1}/3)")
-                                await asyncio.sleep(1)
-                                continue
-                            
-                            # Driver is online, send notification
-                            response = requests.post(
-                                f"http://localhost:{driver_port}/ride/assigned",
-                                json={
-                                    "ride_id": ride.id,
-                                    "user_id": match.user_id,
-                                    "pickup_location": ride.source_location,
-                                    "dropoff_location": ride.dest_location
-                                },
-                                timeout=5  # Increased timeout
-                            )
-                            
-                            if response.status_code == 200:
-                                print(f"   ✅ Driver client notified on port {driver_port}")
-                                driver_notified = True
-                                break
-                            else:
-                                print(f"   ⚠️  Driver responded with status {response.status_code} (attempt {attempt+1}/3)")
-                                
-                        except requests.exceptions.Timeout:
-                            print(f"   ⚠️  Driver {driver_port} timed out (attempt {attempt+1}/3)")
-                            await asyncio.sleep(1)
-                        except requests.exceptions.ConnectionError:
-                            print(f"   ⚠️  Driver {driver_port} connection refused - driver is OFFLINE (attempt {attempt+1}/3)")
-                            await asyncio.sleep(1)
-                        except Exception as e:
-                            print(f"   ⚠️  Could not notify driver on port {driver_port}: {e} (attempt {attempt+1}/3)")
-                            await asyncio.sleep(1)
+                    is_web_driver = False
                     
-                    if not driver_notified:
+                    # First check if driver has a port (Python client) or is web driver
+                    try:
+                        health_check = requests.get(
+                            f"http://localhost:{driver_port}/status",
+                            timeout=0.5  # Quick check
+                        )
+                        if health_check.status_code == 200:
+                            # Python client - try to notify
+                            for attempt in range(3):
+                                try:
+                                    response = requests.post(
+                                        f"http://localhost:{driver_port}/ride/assigned",
+                                        json={
+                                            "ride_id": ride.id,
+                                            "user_id": match.user_id,
+                                            "pickup_location": ride.source_location,
+                                            "dropoff_location": ride.dest_location
+                                        },
+                                        timeout=5
+                                    )
+                                    
+                                    if response.status_code == 200:
+                                        print(f"   ✅ Driver client notified on port {driver_port}")
+                                        driver_notified = True
+                                        break
+                                except Exception as e:
+                                    if attempt == 2:
+                                        print(f"   ⚠️  Could not notify Python driver on port {driver_port}: {e}")
+                                    await asyncio.sleep(1)
+                        else:
+                            is_web_driver = True
+                    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+                        # Port doesn't exist - this is a web driver
+                        is_web_driver = True
+                        print(f"   ℹ️  Driver {match.driver_id} is a web driver (no port) - will poll for assignment")
+                    
+                    # For web drivers, we keep the match in database and let them poll
+                    if is_web_driver:
+                        print(f"   ✅ Match stored - web driver {match.driver_id} can poll for assignment")
+                        driver_notified = True  # Consider it "notified" since it's in DB for polling
+                    
+                    # Check if both user and driver are notified (or web clients)
+                    if user_notified and driver_notified:
+                        # Both notified - keep match in DB for web clients to poll, or delete for Python clients
+                        if is_web_user or is_web_driver:
+                            # Web client(s) - keep match in DB for polling
+                            print(f"   ✅ Match stored - web client(s) can poll for assignment")
+                            db.commit()
+                            continue  # Skip deletion, let clients poll for it
+                        else:
+                            # Both Python clients - delete match after notification
+                            db.delete(match)
+                            db.commit()
+                            print(f"   ✅ Match deleted from database after notification")
+                    elif not driver_notified:
                         print(f"   ❌ FAILED to notify driver {driver_port} after 3 attempts")
                         print(f"   📌 Marking driver {match.driver_id} as unavailable in database")
                         
@@ -161,15 +216,17 @@ async def notifier_loop():
                         # Re-queue the ride by changing status back to pending
                         ride.status = "pending"
                         
-                        # Don't delete the match - let it retry
+                        # Delete the failed match
+                        db.delete(match)
                         db.commit()
                         print(f"   🔄 Ride {ride.id} re-queued for another driver")
-                        continue  # Skip deletion
-                    
-                    # Delete the match after successful notification
-                    db.delete(match)
-                    db.commit()
-                    print(f"   ✅ Match deleted from database after notification")
+                        continue
+                    elif not user_notified:
+                        print(f"   ❌ FAILED to notify user {user_port}")
+                        # Keep match in DB - user might come online later (for web users)
+                        # Or delete if it's been too long (could add timeout logic later)
+                        db.commit()
+                        continue
                     
             finally:
                 db.close()
@@ -227,6 +284,7 @@ def debug_matches(db: Session = Depends(get_db)):
                 "id": m.id,
                 "user_id": m.user_id,
                 "driver_id": m.driver_id,
+                "ride_id": m.ride_id,
                 "status": m.status
             }
             for m in all_matches

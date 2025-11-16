@@ -43,6 +43,14 @@ const driverIcon = L.icon({
   popupAnchor: [1, -34],
 });
 
+const myLocationIcon = L.icon({
+  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-violet.png',
+  shadowUrl: iconShadow,
+  iconSize: [30, 46],
+  iconAnchor: [15, 46],
+  popupAnchor: [1, -34],
+});
+
 interface MapViewProps {
   center: LatLngExpression;
   zoom?: number;
@@ -50,6 +58,7 @@ interface MapViewProps {
   pickupMarker?: { lat: number; lng: number } | null;
   dropoffMarker?: { lat: number; lng: number } | null;
   drivers?: Array<{ driver_id: number; lat: number; lng: number }>;
+  driverLocation?: { lat: number; lng: number } | null;
   height?: string;
 }
 
@@ -73,6 +82,7 @@ export default function MapView({
   pickupMarker,
   dropoffMarker,
   drivers = [],
+  driverLocation = null,
   height = '100%'
 }: MapViewProps) {
   return (
@@ -120,6 +130,23 @@ export default function MapView({
                 <div className="font-bold">🎯 Dropoff Location</div>
                 <div className="text-xs text-gray-600">
                   {dropoffMarker.lat.toFixed(5)}, {dropoffMarker.lng.toFixed(5)}
+                </div>
+              </div>
+            </Popup>
+          </Marker>
+        )}
+
+        {/* Driver's Own Location Marker */}
+        {driverLocation && (
+          <Marker 
+            position={[driverLocation.lat, driverLocation.lng]}
+            icon={myLocationIcon}
+          >
+            <Popup>
+              <div className="text-center">
+                <div className="font-bold">📍 Your Location</div>
+                <div className="text-xs text-gray-600">
+                  {driverLocation.lat.toFixed(5)}, {driverLocation.lng.toFixed(5)}
                 </div>
               </div>
             </Popup>

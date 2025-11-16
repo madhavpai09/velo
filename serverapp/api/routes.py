@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from models.schemas import PingRequest, RideRequest as RideRequestSchema, RideRequestResponse, RideRequestCreate
 from database.connections import get_db
-from database.models import RideRequest as RideRequestModel, DriverInfo
+from database.models import RideRequest as RideRequestModel, DriverInfo, MatchedRide
 from typing import List
 import datetime
 
@@ -169,3 +169,212 @@ def get_driver(driver_id: int, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         return {"error": f"Could not fetch driver: {e}"}
+
+@router.get("/driver/{driver_id}/pending-ride")
+def get_pending_ride_for_driver(driver_id: int, db: Session = Depends(get_db)):
+    """Get pending ride assignment for a driver (for web drivers to poll)"""
+    try:
+        # Find matches for this driver that are pending notification
+        match = db.query(MatchedRide).filter(
+            MatchedRide.driver_id == driver_id,
+            MatchedRide.status == "pending_notification"
+        ).first()
+        
+        if not match:
+            return {"has_ride": False}
+        
+        # Get ride details
+        ride = db.query(RideRequestModel).filter(RideRequestModel.id == match.ride_id).first()
+        if not ride:
+            return {"has_ride": False}
+        
+        return {
+            "has_ride": True,
+            "ride_id": ride.id,
+            "user_id": match.user_id,
+            "pickup_location": ride.source_location,
+            "dropoff_location": ride.dest_location,
+            "match_id": match.id
+        }
+    except Exception as e:
+        return {"has_ride": False, "error": str(e)}
+
+@router.get("/user/{user_id}/ride-status")
+def get_user_ride_status(user_id: int, db: Session = Depends(get_db)):
+    """Get ride status for a user (for web users to poll)"""
+    try:
+        # Find matches for this user that are pending notification or accepted
+        match = db.query(MatchedRide).filter(
+            MatchedRide.user_id == user_id,
+            MatchedRide.status == "pending_notification"
+        ).first()
+        
+        if not match:
+            # Check if user has an accepted/matched ride
+            ride = db.query(RideRequestModel).filter(
+                RideRequestModel.user_id == user_id,
+                RideRequestModel.status.in_(["matched", "accepted", "in_progress"])
+            ).order_by(RideRequestModel.created_at.desc()).first()
+            
+            if ride:
+                # Find the driver for this ride
+                driver_match = db.query(MatchedRide).filter(
+                    MatchedRide.user_id == user_id
+                ).first()
+                driver_id = driver_match.driver_id if driver_match else None
+                
+                return {
+                    "has_ride": True,
+                    "ride_id": ride.id,
+                    "status": ride.status,
+                    "driver_id": driver_id,
+                    "pickup_location": ride.source_location,
+                    "dropoff_location": ride.dest_location
+                }
+            
+            return {"has_ride": False}
+        
+        # Get ride details
+        ride = db.query(RideRequestModel).filter(RideRequestModel.id == match.ride_id).first()
+        if not ride:
+            return {"has_ride": False}
+        
+        # Get driver info
+        driver = db.query(DriverInfo).filter(DriverInfo.driver_id == match.driver_id).first()
+        
+        return {
+            "has_ride": True,
+            "ride_id": ride.id,
+            "status": "matched",
+            "driver_id": match.driver_id,
+            "driver_location": driver.current_location if driver else None,
+            "pickup_location": ride.source_location,
+            "dropoff_location": ride.dest_location,
+            "match_id": match.id
+        }
+    except Exception as e:
+        return {"has_ride": False, "error": str(e)}
+
+@router.post("/driver/{driver_id}/accept-ride/{match_id}")
+def accept_ride_assignment(driver_id: int, match_id: int, db: Session = Depends(get_db)):
+    """Mark ride assignment as accepted by driver"""
+    try:
+        match = db.query(MatchedRide).filter(
+            MatchedRide.id == match_id,
+            MatchedRide.driver_id == driver_id
+        ).first()
+        
+        if not match:
+            raise HTTPException(status_code=404, detail="Match not found")
+        
+        # Update ride status to accepted
+        ride = db.query(RideRequestModel).filter(RideRequestModel.id == match.ride_id).first()
+        if ride:
+            ride.status = "accepted"
+        
+        # Mark driver as unavailable (on a ride)
+        driver = db.query(DriverInfo).filter(DriverInfo.driver_id == driver_id).first()
+        if driver:
+            driver.available = False
+        
+        # Update match status to "accepted" so notifier doesn't try to process it again
+        # Keep the match in database so driver can complete it later
+        match.status = "accepted"
+        db.commit()
+        
+        print(f"✅ Driver {driver_id} accepted ride {match.ride_id}")
+        
+        return {"message": "Ride accepted", "ride_id": match.ride_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error accepting ride for driver {driver_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/driver/{driver_id}/current-ride")
+def get_driver_current_ride(driver_id: int, db: Session = Depends(get_db)):
+    """Get current active ride for a driver"""
+    try:
+        # Find active match for this driver (accepted or pending_notification)
+        match = db.query(MatchedRide).filter(
+            MatchedRide.driver_id == driver_id,
+            MatchedRide.status.in_(["pending_notification", "accepted"])
+        ).first()
+        
+        if not match:
+            return {"has_ride": False}
+        
+        # Get ride details
+        ride = db.query(RideRequestModel).filter(RideRequestModel.id == match.ride_id).first()
+        if not ride:
+            return {"has_ride": False}
+        
+        # Only return if ride is not completed
+        if ride.status in ["completed", "cancelled"]:
+            return {"has_ride": False}
+        
+        return {
+            "has_ride": True,
+            "ride_id": ride.id,
+            "user_id": match.user_id,
+            "status": ride.status,
+            "pickup_location": ride.source_location,
+            "dropoff_location": ride.dest_location,
+            "match_id": match.id
+        }
+    except Exception as e:
+        return {"has_ride": False, "error": str(e)}
+
+@router.post("/driver/{driver_id}/complete-ride/{ride_id}")
+def complete_ride(driver_id: int, ride_id: int, db: Session = Depends(get_db)):
+    """Complete a ride and mark driver as available again"""
+    try:
+        # First check if ride exists
+        ride = db.query(RideRequestModel).filter(RideRequestModel.id == ride_id).first()
+        if not ride:
+            raise HTTPException(status_code=404, detail=f"Ride {ride_id} not found")
+        
+        # Verify the ride belongs to this driver by checking match or ride status
+        match = db.query(MatchedRide).filter(
+            MatchedRide.driver_id == driver_id,
+            MatchedRide.ride_id == ride_id
+        ).first()
+        
+        # If no match found, check if ride is already completed or if driver was assigned
+        # (match might have been deleted already, but we can still complete if ride status is accepted/matched)
+        if not match:
+            # Check if ride is in a state that can be completed by this driver
+            if ride.status in ["completed", "cancelled"]:
+                raise HTTPException(status_code=400, detail=f"Ride {ride_id} is already {ride.status}")
+            
+            # Try to find match by driver_id and user_id (match might have been deleted)
+            # If ride status is accepted/matched, allow completion
+            if ride.status not in ["accepted", "matched", "in_progress"]:
+                raise HTTPException(status_code=403, detail="Ride is not in a state that can be completed")
+        
+        # Update ride status to completed
+        ride.status = "completed"
+        
+        # Mark driver as available again
+        driver = db.query(DriverInfo).filter(DriverInfo.driver_id == driver_id).first()
+        if driver:
+            driver.available = True
+        else:
+            raise HTTPException(status_code=404, detail=f"Driver {driver_id} not found")
+        
+        # Delete the match record if it exists
+        if match:
+            db.delete(match)
+        
+        db.commit()
+        
+        print(f"✅ Ride {ride_id} completed by driver {driver_id}. Driver is now available.")
+        
+        return {"message": "Ride completed", "ride_id": ride_id, "driver_available": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error completing ride {ride_id} for driver {driver_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to complete ride: {str(e)}")

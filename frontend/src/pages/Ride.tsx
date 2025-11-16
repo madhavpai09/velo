@@ -51,7 +51,7 @@ export default function Ride() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <button 
-                onClick={() => navigate('/')}
+                onClick={() => navigate('/user')}
                 className="text-2xl hover:scale-110 transition-transform"
               >
                 ←
@@ -61,12 +61,20 @@ export default function Ride() {
                 <p className="text-sm text-blue-200">View and track rides</p>
               </div>
             </div>
-            <button
-              onClick={() => navigate('/')}
-              className="bg-white text-blue-600 px-4 py-2 rounded-lg font-semibold hover:bg-blue-50 transition-colors"
-            >
-              New Ride
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => navigate('/user')}
+                className="bg-white text-blue-600 px-4 py-2 rounded-lg font-semibold hover:bg-blue-50 transition-colors"
+              >
+                New Ride
+              </button>
+              <button
+                onClick={() => navigate('/')}
+                className="bg-white/20 text-white px-4 py-2 rounded-lg font-semibold hover:bg-white/30 transition-colors"
+              >
+                Switch Role
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -83,7 +91,7 @@ export default function Ride() {
             <div className="text-6xl mb-4">🚗</div>
             <p className="text-gray-600 mb-4">No rides yet</p>
             <button
-              onClick={() => navigate('/')}
+              onClick={() => navigate('/user')}
               className="bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700"
             >
               Request Your First Ride

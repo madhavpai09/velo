@@ -13,22 +13,44 @@ from database.models import Base, RideRequest, DriverInfo, MatchedRide
 
 Base.metadata.create_all(bind=engine)
 
-def is_driver_online(driver_id: int) -> bool:
-    """Check if driver client is actually online by pinging its health endpoint"""
+def is_driver_online(driver_id: int, db=None) -> bool:
+    """Check if driver is online - for web drivers, check database; for Python clients, check port"""
+    # First check database if available
+    if db is not None:
+        driver = db.query(DriverInfo).filter(DriverInfo.driver_id == driver_id).first()
+        if driver and driver.available:
+            # For web drivers, trust the database availability flag
+            # Try to ping port as fallback (for Python clients), but don't fail if it doesn't exist
+            try:
+                driver_port = driver_id
+                response = requests.get(
+                    f"http://localhost:{driver_port}/status",
+                    timeout=0.5  # Very quick timeout
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    # Python client is online
+                    return data.get('driver_id') == f"DRIVER-{driver_id}" and data.get('is_available', False)
+            except:
+                # Port doesn't exist (web driver) - trust database
+                pass
+            # Web driver - trust database availability
+            return True
+        return False
+    
+    # Fallback: try port check (for Python clients)
     try:
-        # Driver port is the driver_id itself
         driver_port = driver_id
         response = requests.get(
             f"http://localhost:{driver_port}/status",
-            timeout=1  # Quick timeout
+            timeout=1
         )
         if response.status_code == 200:
             data = response.json()
-            # Verify it's the correct driver and available
             return data.get('driver_id') == f"DRIVER-{driver_id}" and data.get('is_available', False)
         return False
     except Exception as e:
-        print(f"   ⚠️  Driver {driver_id} is offline: {e}")
+        print(f"   ⚠️  Driver {driver_id} port check failed: {e}")
         return False
 
 # Background task to check for matches every 5 seconds
@@ -65,18 +87,21 @@ async def matcher_loop():
                 print(f"   👥 Found {len(available_drivers)} driver(s) in database, checking if online...")
                 
                 # Check each driver to see if they're actually online
+                # For web drivers, we trust the database availability flag
                 online_driver = None
                 for driver in available_drivers:
-                    print(f"   🔌 Checking driver {driver.driver_id} (port {driver.driver_id})...")
-                    if is_driver_online(driver.driver_id):
+                    print(f"   🔌 Checking driver {driver.driver_id}...")
+                    if is_driver_online(driver.driver_id, db=db):
                         online_driver = driver
                         print(f"   ✅ Driver {driver.driver_id} is ONLINE and available!")
                         break
                     else:
-                        # Mark driver as unavailable in database
-                        print(f"   ❌ Driver {driver.driver_id} is OFFLINE, marking unavailable")
-                        driver.available = False
-                        db.commit()
+                        # Driver not found via port check - could be web driver or offline Python client
+                        # Since driver.available is True (we filtered for it), trust the database
+                        # This handles web drivers that don't have ports
+                        online_driver = driver
+                        print(f"   ✅ Driver {driver.driver_id} is available (web driver or database-only)")
+                        break
                 
                 if not online_driver:
                     print("   ℹ️  No online drivers found")
@@ -98,6 +123,7 @@ async def matcher_loop():
                 matched = MatchedRide(
                     user_id=ride.user_id,
                     driver_id=online_driver.driver_id,
+                    ride_id=ride.id,  # Store ride_id for direct lookup
                     status="pending_notification"
                 )
                 db.add(matched)
@@ -164,12 +190,13 @@ def check_online_drivers(db: Session = Depends(get_db)):
     results = []
     
     for driver in all_drivers:
-        online = is_driver_online(driver.driver_id)
+        online = is_driver_online(driver.driver_id, db=db)
         results.append({
             "driver_id": driver.driver_id,
             "db_available": driver.available,
             "actually_online": online,
-            "port": driver.driver_id
+            "port": driver.driver_id,
+            "type": "web" if driver.available and not online else "python_client"
         })
     
     return {"drivers": results}

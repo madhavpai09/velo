@@ -243,13 +243,23 @@ def update_match(payload: UpdateMatchPayload, db: Session = Depends(get_db)):
     ).first()
     
     if not existing_match:
-        matched = MatchedRide(user_id=payload.user_id, driver_id=payload.driver_id)
+        # Get ride_id from the ride if available
+        ride_id = ride.id if ride else None
+        matched = MatchedRide(
+            user_id=payload.user_id, 
+            driver_id=payload.driver_id,
+            ride_id=ride_id  # Store ride_id for direct lookup
+        )
         db.add(matched)
         db.commit()
         db.refresh(matched)
-        print(f"📝 Match recorded: User {payload.user_id} ↔ Driver {payload.driver_id}")
+        print(f"📝 Match recorded: User {payload.user_id} ↔ Driver {payload.driver_id} (Ride ID: {ride_id})")
         return {"message": "match recorded", "matched_id": matched.id}
     else:
+        # Update existing match with ride_id if not already set
+        if ride and not existing_match.ride_id:
+            existing_match.ride_id = ride.id
+            db.commit()
         print(f"ℹ️  Match already exists: User {payload.user_id} ↔ Driver {payload.driver_id}")
         return {"message": "match already exists", "matched_id": existing_match.id}
 
