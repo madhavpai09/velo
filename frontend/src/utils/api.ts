@@ -1,151 +1,153 @@
-// src/utils/api.ts - NO AXIOS, using native fetch
+const API_BASE_URL = 'http://localhost:8000/api';
 
-const API_BASE = 'http://localhost:8000/api';
-
-export interface Location {
-  lat: number;
-  lng: number;
-}
-
-export interface RideResponse {
-  message: string;
-  data: {
-    id: number;
-    source_location: string;
-    dest_location: string;
-    user_id: number;
-    status: string;
-    created_at: string;
-  };
-}
-
-export interface Driver {
+export interface DriverForMap {
   id: number;
   driver_id: number;
   current_location: string;
   available: boolean;
 }
 
-export interface DriverForMap {
-  driver_id: number;
-  lat: number;
-  lng: number;
-  available: boolean;
-}
-
-export const createRideRequest = async (
-  pickup: Location,
-  dropoff: Location,
-  userId: number = 7000
-): Promise<RideResponse> => {
-  const response = await fetch(`${API_BASE}/ride-request`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      source_location: `${pickup.lat},${pickup.lng}`,
-      dest_location: `${dropoff.lat},${dropoff.lng}`,
-      user_id: userId,
-    }),
-  });
-  if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-  return await response.json();
-};
-
-export const getAvailableDrivers = async (): Promise<DriverForMap[]> => {
-  try {
-    const response = await fetch(`${API_BASE}/drivers/available`);
-    if (!response.ok) return [];
-    const data = await response.json();
-    const drivers = data.drivers || [];
-    return drivers.map((driver: Driver) => {
-      const [lat, lng] = driver.current_location.split(',').map(Number);
-      return { driver_id: driver.driver_id, lat, lng, available: driver.available };
-    });
-  } catch {
-    return [];
-  }
-};
-
-export const getRideStatus = async (rideId: number) => {
-  const response = await fetch(`${API_BASE}/ride-request/${rideId}`);
-  if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-  return await response.json();
-};
-
-export const getAllRideRequests = async () => {
-  try {
-    const response = await fetch(`${API_BASE}/ride-requests`);
-    if (!response.ok) return [];
-    return await response.json();
-  } catch {
-    return [];
-  }
-};
-
-// Driver API functions
 export interface DriverStatus {
   id: number;
   driver_id: number;
-  current_location: string;
+  current_location: string | null;
   available: boolean;
 }
 
-export const registerDriver = async (
+export async function createRideRequest(
+  pickupLocation: { lat: number; lng: number },
+  dropoffLocation: { lat: number; lng: number },
+  userId: number,
+  pickupAddress?: string,
+  dropoffAddress?: string
+) {
+  const response = await fetch(`${API_BASE_URL}/ride-request`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      source_location: pickupAddress || `${pickupLocation.lat},${pickupLocation.lng}`,
+      dest_location: dropoffAddress || `${dropoffLocation.lat},${dropoffLocation.lng}`,
+      user_id: userId,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to create ride request');
+  }
+
+  return await response.json();
+}
+
+export async function getAvailableDrivers(): Promise<DriverForMap[]> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/drivers/available`);
+    if (!response.ok) {
+      return [];
+    }
+    const data = await response.json();
+    return data.drivers || [];
+  } catch (error) {
+    console.error('Failed to fetch drivers:', error);
+    return [];
+  }
+}
+
+export async function getAllRideRequests() {
+  try {
+    const response = await fetch(`${API_BASE_URL}/ride-requests`);
+    if (!response.ok) {
+      return [];
+    }
+    return await response.json();
+  } catch (error) {
+    console.error('Failed to fetch ride requests:', error);
+    return [];
+  }
+}
+
+export async function getRideStatus(userId: number) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/user/${userId}/ride-status`);
+    if (!response.ok) {
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    console.error('Failed to fetch ride status:', error);
+    return null;
+  }
+}
+
+export async function getDriverStatus(driverId: number): Promise<DriverStatus | null> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/drivers/${driverId}`);
+    if (!response.ok) {
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    console.error('Failed to fetch driver status:', error);
+    return null;
+  }
+}
+
+export async function registerDriver(
   driverId: string,
-  name: string,
-  location: Location
-): Promise<any> => {
+  driverName: string,
+  location: { lat: number; lng: number }
+) {
   const response = await fetch('http://localhost:8000/driver/register', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify({
       driver_id: driverId,
-      name: name,
-      port: parseInt(driverId.replace('DRIVER-', '')) || 9000,
+      name: driverName,
+      port: parseInt(driverId.replace('DRIVER-', '')) || parseInt(driverId),
       location: location,
     }),
   });
-  if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-  return await response.json();
-};
 
-export const setDriverAvailability = async (
-  driverId: string,
-  isAvailable: boolean
-): Promise<any> => {
+  if (!response.ok) {
+    throw new Error('Failed to register driver');
+  }
+
+  return await response.json();
+}
+
+export async function setDriverAvailability(driverId: string, isAvailable: boolean) {
   const response = await fetch(
-    `http://localhost:8000/driver/set-availability?driver_id=${driverId}&is_available=${isAvailable}`,
+    `http://localhost:8000/driver/set-availability?driver_id=${encodeURIComponent(driverId)}&is_available=${isAvailable}`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
     }
   );
-  if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-  return await response.json();
-};
 
-export const updateDriverLocation = async (
-  driverId: string,
-  location: Location
-): Promise<any> => {
+  if (!response.ok) {
+    throw new Error('Failed to set driver availability');
+  }
+
+  return await response.json();
+}
+
+export async function updateDriverLocation(driverId: string, location: { lat: number; lng: number }) {
   const response = await fetch(
-    `http://localhost:8000/driver/update-location?driver_id=${driverId}`,
+    `http://localhost:8000/driver/update-location?driver_id=${encodeURIComponent(driverId)}`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify(location),
     }
   );
-  if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-  return await response.json();
-};
 
-export const getDriverStatus = async (driverId: number): Promise<DriverStatus | null> => {
-  try {
-    const response = await fetch(`${API_BASE}/drivers/${driverId}`);
-    if (!response.ok) return null;
-    return await response.json();
-  } catch {
-    return null;
+  if (!response.ok) {
+    throw new Error('Failed to update driver location');
   }
-};
+
+  return await response.json();
+}

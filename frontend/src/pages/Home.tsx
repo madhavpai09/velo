@@ -8,6 +8,7 @@ import {
   getRideStatus,
   DriverForMap 
 } from '../utils/api';
+import { getAddressFromCoordinates } from '../utils/locationUtils';
 
 interface AssignedDriver {
   ride_id?: number;
@@ -23,6 +24,8 @@ export default function Home() {
   const navigate = useNavigate();
   const [pickupLocation, setPickupLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [dropoffLocation, setDropoffLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [pickupAddress, setPickupAddress] = useState<string>('');
+  const [dropoffAddress, setDropoffAddress] = useState<string>('');
   const [drivers, setDrivers] = useState<DriverForMap[]>([]);
   const [rideId, setRideId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -122,9 +125,17 @@ export default function Home() {
   const handleLocationSelect = (lat: number, lng: number) => {
     if (selectionMode === 'pickup') {
       setPickupLocation({ lat, lng });
+      // Get address for pickup
+      getAddressFromCoordinates(lat, lng).then(address => {
+        setPickupAddress(address);
+      });
       setSelectionMode('dropoff');
     } else {
       setDropoffLocation({ lat, lng });
+      // Get address for dropoff
+      getAddressFromCoordinates(lat, lng).then(address => {
+        setDropoffAddress(address);
+      });
     }
   };
 
@@ -139,7 +150,9 @@ export default function Home() {
       const response = await createRideRequest(
         pickupLocation,
         dropoffLocation,
-        userId || 7000
+        userId || 7000,
+        pickupAddress || `${pickupLocation.lat.toFixed(4)}, ${pickupLocation.lng.toFixed(4)}`,
+        dropoffAddress || `${dropoffLocation.lat.toFixed(4)}, ${dropoffLocation.lng.toFixed(4)}`
       );
 
       setRideId(response.data.id);
@@ -159,6 +172,8 @@ export default function Home() {
     setWaitingForDriver(false);
     setPickupLocation(null);
     setDropoffLocation(null);
+    setPickupAddress('');
+    setDropoffAddress('');
     setSelectionMode('pickup');
   };
 
@@ -296,6 +311,8 @@ export default function Home() {
           <RideForm
             pickupLocation={pickupLocation}
             dropoffLocation={dropoffLocation}
+            pickupAddress={pickupAddress}
+            dropoffAddress={dropoffAddress}
             onRequestRide={handleRequestRide}
             loading={loading}
             rideId={rideId}
