@@ -14,31 +14,24 @@ from database.models import Base, RideRequest, DriverInfo, MatchedRide
 Base.metadata.create_all(bind=engine)
 
 def is_driver_online(driver_id: int, db=None) -> bool:
-    """Check if driver is online - for web drivers, check database; for Python clients, check port"""
-    # First check database if available
+    """Check if driver is online"""
     if db is not None:
         driver = db.query(DriverInfo).filter(DriverInfo.driver_id == driver_id).first()
         if driver and driver.available:
-            # For web drivers, trust the database availability flag
-            # Try to ping port as fallback (for Python clients), but don't fail if it doesn't exist
             try:
                 driver_port = driver_id
                 response = requests.get(
                     f"http://localhost:{driver_port}/status",
-                    timeout=0.5  # Very quick timeout
+                    timeout=0.5
                 )
                 if response.status_code == 200:
                     data = response.json()
-                    # Python client is online
                     return data.get('driver_id') == f"DRIVER-{driver_id}" and data.get('is_available', False)
             except:
-                # Port doesn't exist (web driver) - trust database
                 pass
-            # Web driver - trust database availability
             return True
         return False
     
-    # Fallback: try port check (for Python clients)
     try:
         driver_port = driver_id
         response = requests.get(
@@ -50,92 +43,88 @@ def is_driver_online(driver_id: int, db=None) -> bool:
             return data.get('driver_id') == f"DRIVER-{driver_id}" and data.get('is_available', False)
         return False
     except Exception as e:
-        print(f"   ⚠️  Driver {driver_id} port check failed: {e}")
         return False
 
 # Background task to check for matches every 5 seconds
 async def matcher_loop():
-    """Background task that wakes every 5s and matches rides"""
+    """Background task that broadcasts ride requests to multiple nearby drivers"""
     while True:
         try:
             await asyncio.sleep(5)
             print("🔍 Auto-checking for pending rides...")
             
-            # Get database session
             db = SessionLocal()
             try:
                 # Find pending ride
                 ride = db.query(RideRequest).filter(RideRequest.status == "pending").first()
                 
                 if not ride:
-                    print("   ℹ️  No pending rides")
+                    print("   ℹ️ No pending rides")
                     db.close()
                     continue
                 
-                print(f"   📍 Found pending ride from user {ride.user_id}")
+                print(f"   🚗 Found pending ride from user {ride.user_id}")
                 
-                # Find available drivers (from database)
+                # Find ALL available drivers (not just one)
                 available_drivers = db.query(DriverInfo).filter(
                     DriverInfo.available == True
                 ).all()
                 
                 if not available_drivers:
-                    print("   ℹ️  No available drivers in database")
+                    print("   ℹ️ No available drivers in database")
                     db.close()
                     continue
                 
-                print(f"   👥 Found {len(available_drivers)} driver(s) in database, checking if online...")
+                print(f"   👥 Found {len(available_drivers)} available driver(s)")
                 
-                # Check each driver to see if they're actually online
-                # For web drivers, we trust the database availability flag
-                online_driver = None
+                # Filter to only online drivers
+                online_drivers = []
                 for driver in available_drivers:
-                    print(f"   🔌 Checking driver {driver.driver_id}...")
                     if is_driver_online(driver.driver_id, db=db):
-                        online_driver = driver
-                        print(f"   ✅ Driver {driver.driver_id} is ONLINE and available!")
-                        break
-                    else:
-                        # Driver not found via port check - could be web driver or offline Python client
-                        # Since driver.available is True (we filtered for it), trust the database
-                        # This handles web drivers that don't have ports
-                        online_driver = driver
-                        print(f"   ✅ Driver {driver.driver_id} is available (web driver or database-only)")
-                        break
+                        online_drivers.append(driver)
+                        print(f"   ✅ Driver {driver.driver_id} is online")
                 
-                if not online_driver:
-                    print("   ℹ️  No online drivers found")
+                if not online_drivers:
+                    print("   ℹ️ No online drivers found")
                     db.close()
                     continue
                 
-                # Found a match!
-                print(f"\n🎯 Match Found!")
+                # BROADCAST: Create ride offers for ALL online drivers
+                print(f"\n📢 Broadcasting ride to {len(online_drivers)} driver(s)!")
                 print(f"   User ID: {ride.user_id}")
-                print(f"   Driver ID: {online_driver.driver_id}")
                 print(f"   From: {ride.source_location}")
                 print(f"   To: {ride.dest_location}")
-
-                # Update statuses
-                ride.status = "matched"
-                online_driver.available = False
-
-                # Create matched ride record with status="pending_notification"
-                matched = MatchedRide(
-                    user_id=ride.user_id,
-                    driver_id=online_driver.driver_id,
-                    ride_id=ride.id,  # Store ride_id for direct lookup
-                    status="pending_notification"
-                )
-                db.add(matched)
-                db.commit()
                 
-                print(f"   ✅ Match stored in database (ID: {matched.id})")
+                # Update ride status to "broadcasting"
+                ride.status = "broadcasting"
+                
+                # Create matched ride records for all online drivers with status "broadcast"
+                for driver in online_drivers:
+                    # Check if this driver already has a broadcast for this ride
+                    existing = db.query(MatchedRide).filter(
+                        MatchedRide.ride_id == ride.id,
+                        MatchedRide.driver_id == driver.driver_id
+                    ).first()
+                    
+                    if not existing:
+                        matched = MatchedRide(
+                            user_id=ride.user_id,
+                            driver_id=driver.driver_id,
+                            ride_id=ride.id,
+                            status="broadcast"  # New status for broadcast offers
+                        )
+                        db.add(matched)
+                        print(f"   📤 Broadcast created for driver {driver.driver_id}")
+                
+                db.commit()
+                print(f"   ✅ Ride broadcast to {len(online_drivers)} driver(s)")
+                print(f"   ⏳ Waiting for first driver to accept...")
                     
             finally:
                 db.close()
                 
         except Exception as e:
-            print(f"   ⚠️  Matcher loop error: {e}")
+            print(f"   ⚠️ Matcher loop error: {e}")
             import traceback
             traceback.print_exc()
 
@@ -143,7 +132,7 @@ async def matcher_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(matcher_loop())
-    print("🔄 Matcher loop started (checking every 5 seconds).")
+    print("🔄 Matcher loop started (broadcasting to multiple drivers).")
     yield
     task.cancel()
     print("🛑 Matcher loop stopped.")
@@ -168,7 +157,9 @@ def health():
 @app.get("/matches/pending")
 def get_pending_matches(db: Session = Depends(get_db)):
     """Get all matches that haven't been notified yet"""
-    pending = db.query(MatchedRide).filter(MatchedRide.status == "pending_notification").all()
+    pending = db.query(MatchedRide).filter(
+        MatchedRide.status.in_(["pending_notification", "broadcast"])
+    ).all()
     return {
         "count": len(pending),
         "matches": [
@@ -176,6 +167,7 @@ def get_pending_matches(db: Session = Depends(get_db)):
                 "id": m.id,
                 "user_id": m.user_id,
                 "driver_id": m.driver_id,
+                "ride_id": m.ride_id,
                 "status": m.status
             }
             for m in pending
@@ -208,7 +200,7 @@ if __name__ == "__main__":
     print("🎯 Mini Uber Matcher Service")
     print("="*60)
     print("   Port: 8001")
-    print("   Checking for matches every 5 seconds")
-    print("   ✨ With online driver verification")
+    print("   Broadcasting to multiple nearby drivers")
+    print("   First to accept wins!")
     print("="*60 + "\n")
     uvicorn.run(app, host="0.0.0.0", port=8001, log_level="warning")

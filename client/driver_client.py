@@ -17,6 +17,7 @@ class VeloDriverClient:
         self.is_available = True
         self.current_ride = None
         self.rides_completed = 0
+        self.pending_ride = None  # NEW: Store pending ride offer
         
         # Create FastAPI app for this driver
         self.app = FastAPI(title=f"VELO Driver {self.driver_id}")
@@ -29,7 +30,7 @@ class VeloDriverClient:
         async def receive_ride_assignment(assignment: dict):
             """Receive ride assignment from dispatch server"""
             print(f"\n{'='*60}")
-            print(f"🚨 New Ride Assigned!")
+            print(f"🚨 New Ride Offer!")
             print(f"{'='*60}")
             print(f"   Ride ID: {assignment.get('ride_id')}")
             print(f"   User ID: {assignment.get('user_id')}")
@@ -37,48 +38,14 @@ class VeloDriverClient:
             print(f"   Dropoff: {assignment.get('dropoff_location')}")
             print(f"{'='*60}")
             
-            self.current_ride = assignment
-            self.is_available = False
+            # Store pending ride instead of auto-accepting
+            self.pending_ride = assignment
             
-            ride_id = assignment.get('ride_id')
-            
-            # Auto-accept the ride
-            print(f"\n✅ Auto-accepting ride {ride_id}...")
-            self.update_ride_status(ride_id, "accepted")
-            
-            # Auto-start the ride after 2 seconds
-            print(f"🚗 Auto-starting ride in 2 seconds...")
-            await asyncio.sleep(2)
-            self.update_ride_status(ride_id, "in_progress")
-            
-            # Auto-complete the ride after 5 seconds
-            print(f"⏳ Ride will complete in 5 seconds...")
-            await asyncio.sleep(5)
-            print(f"\n🏁 Completing ride {ride_id}...")
-            self.update_ride_status(ride_id, "completed")
-            
-            # IMPORTANT: Reset state and mark as available
-            self.current_ride = None
-            self.is_available = True
-            self.rides_completed += 1
-            
-            # Re-register availability with server
-            print(f"🔄 Re-registering as available...")
-            self.set_availability(True)
-            
-            # Verify availability was set
-            await asyncio.sleep(0.5)
-            status = self.check_server_status()
-            if status and status.get('available'):
-                print(f"✅ Driver is now available for next ride! (Completed: {self.rides_completed})")
-            else:
-                print(f"⚠️  Warning: Driver may not be marked as available on server!")
-                # Try again
-                self.set_availability(True)
-            
+            print(f"\n⏳ Waiting for driver to accept or decline...")
+            print(f"   Use commands: 'accept' or 'decline'")
             print(f"{'='*60}\n")
             
-            return {"message": "Ride assignment received", "status": "accepted"}
+            return {"message": "Ride offer received", "status": "pending_acceptance"}
         
         @self.app.get("/status")
         async def get_status():
@@ -90,6 +57,7 @@ class VeloDriverClient:
                 "location": self.current_location,
                 "is_available": self.is_available,
                 "current_ride": self.current_ride,
+                "pending_ride": self.pending_ride,
                 "rides_completed": self.rides_completed
             }
         
@@ -137,7 +105,6 @@ class VeloDriverClient:
     def check_server_status(self) -> dict:
         """Check driver status on server"""
         try:
-            # Extract numeric ID from DRIVER-XXXX format
             numeric_id = int(self.driver_id.replace("DRIVER-", ""))
             
             response = requests.get(
@@ -150,7 +117,7 @@ class VeloDriverClient:
             return None
             
         except Exception as e:
-            print(f"⚠️  Could not check server status: {e}")
+            print(f"⚠️ Could not check server status: {e}")
             return None
     
     def update_location(self, location: dict) -> dict:
@@ -168,7 +135,7 @@ class VeloDriverClient:
             return response.json()
             
         except requests.RequestException as e:
-            print(f"⚠️  Failed to update location: {e}")
+            print(f"⚠️ Failed to update location: {e}")
             return {"error": f"Failed to update location: {e}"}
     
     def set_availability(self, is_available: bool) -> dict:
@@ -191,7 +158,7 @@ class VeloDriverClient:
             return response.json()
             
         except requests.RequestException as e:
-            print(f"⚠️  Failed to set availability: {e}")
+            print(f"⚠️ Failed to set availability: {e}")
             return {"error": f"Failed to set availability: {e}"}
     
     def update_ride_status(self, ride_id: int, status: str) -> dict:
@@ -208,8 +175,49 @@ class VeloDriverClient:
             return response.json()
             
         except requests.RequestException as e:
-            print(f"⚠️  Failed to update ride status: {e}")
+            print(f"⚠️ Failed to update ride status: {e}")
             return {"error": f"Failed to update ride status: {e}"}
+    
+    def accept_ride(self) -> dict:
+        """Accept the pending ride offer"""
+        if not self.pending_ride:
+            return {"error": "No pending ride to accept"}
+        
+        ride_id = self.pending_ride.get('ride_id')
+        print(f"\n✅ Accepting ride {ride_id}...")
+        
+        # Update ride status to accepted
+        self.update_ride_status(ride_id, "accepted")
+        
+        # Move pending ride to current ride
+        self.current_ride = self.pending_ride
+        self.pending_ride = None
+        self.is_available = False
+        
+        print(f"🚗 Ride accepted! You are now unavailable.")
+        print(f"   Pickup: {self.current_ride.get('pickup_location')}")
+        print(f"   Dropoff: {self.current_ride.get('dropoff_location')}")
+        
+        return {"message": "Ride accepted", "ride_id": ride_id}
+    
+    def decline_ride(self) -> dict:
+        """Decline the pending ride offer"""
+        if not self.pending_ride:
+            return {"error": "No pending ride to decline"}
+        
+        ride_id = self.pending_ride.get('ride_id')
+        print(f"\n❌ Declining ride {ride_id}...")
+        
+        # Update ride status back to pending so it can be reassigned
+        self.update_ride_status(ride_id, "pending")
+        
+        # Clear pending ride
+        self.pending_ride = None
+        
+        print(f"🔄 Ride declined. Ride will be offered to another driver.")
+        print(f"   You remain available for new rides.")
+        
+        return {"message": "Ride declined", "ride_id": ride_id}
     
     def start_ride(self) -> dict:
         """Start the current ride"""
@@ -234,6 +242,8 @@ class VeloDriverClient:
         self.rides_completed += 1
         self.set_availability(True)
         
+        print(f"✅ Ride completed! Total rides: {self.rides_completed}")
+        
         return result
     
     def run(self):
@@ -252,7 +262,7 @@ class VeloDriverClient:
         print(f"   Status: {'✅ Available' if self.is_available else '🔴 Unavailable'}")
         print(f"{'='*60}")
         print(f"\n⏳ Waiting for ride assignments...")
-        print(f"   (Will auto-complete rides after 7 seconds)\n")
+        print(f"   (Use interactive mode to accept/decline rides)\n")
         
         uvicorn.run(self.app, host="0.0.0.0", port=self.driver_port, log_level="warning")
 
@@ -270,14 +280,16 @@ def interactive_mode(driver: VeloDriverClient):
         print("\nOptions:")
         print("1. Update location")
         print("2. Toggle availability")
-        print("3. Start current ride")
-        print("4. Complete current ride")
-        print("5. View current status")
-        print("6. Check server status")
-        print("7. Re-register driver")
-        print("8. Exit")
+        print("3. Accept pending ride")
+        print("4. Decline pending ride")
+        print("5. Start current ride")
+        print("6. Complete current ride")
+        print("7. View current status")
+        print("8. Check server status")
+        print("9. Re-register driver")
+        print("0. Exit")
         
-        choice = input("\nEnter choice (1-8): ").strip()
+        choice = input("\nEnter choice (0-9): ").strip()
         
         if choice == "1":
             lat = float(input("  Enter latitude: "))
@@ -291,31 +303,40 @@ def interactive_mode(driver: VeloDriverClient):
             print(f"\n{result}")
             
         elif choice == "3":
-            result = driver.start_ride()
+            result = driver.accept_ride()
             print(f"\n{result}")
             
         elif choice == "4":
-            result = driver.complete_ride()
+            result = driver.decline_ride()
             print(f"\n{result}")
             
         elif choice == "5":
+            result = driver.start_ride()
+            print(f"\n{result}")
+            
+        elif choice == "6":
+            result = driver.complete_ride()
+            print(f"\n{result}")
+            
+        elif choice == "7":
             print(f"\n📊 Driver Status:")
             print(f"   ID: {driver.driver_id}")
             print(f"   Name: {driver.driver_name}")
             print(f"   Location: {driver.current_location}")
             print(f"   Available: {driver.is_available}")
+            print(f"   Pending Ride: {driver.pending_ride}")
             print(f"   Current Ride: {driver.current_ride}")
             print(f"   Rides Completed: {driver.rides_completed}")
             
-        elif choice == "6":
+        elif choice == "8":
             status = driver.check_server_status()
             print(f"\n📊 Server Status: {status}")
             
-        elif choice == "7":
+        elif choice == "9":
             result = driver.register()
             print(f"\n{result}")
             
-        elif choice == "8":
+        elif choice == "0":
             print("\n👋 Goodbye!")
             break
 
@@ -335,7 +356,7 @@ def main():
     parser.add_argument('--lng', type=float, default=77.5946, 
                        help='Initial longitude (default: Bangalore)')
     parser.add_argument('--interactive', action='store_true', 
-                       help='Run in interactive mode (no server)')
+                       help='Run in interactive mode (recommended for manual acceptance)')
     
     args = parser.parse_args()
     
