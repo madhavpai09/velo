@@ -148,9 +148,9 @@ export default function Home() {
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <span className="text-4xl">🚕</span>
+              <span className="text-4xl"><img src="/0796f710-7ecb-4a40-8176-2eba9ee3c5cd.png" alt="VELO" className="w-11 h-11" /></span>
               <div>
-                <h1 className="text-3xl font-bold">VELO</h1>
+                <h1 className="text-3xl font-bold">VELOcabs</h1>
                 <p className="text-sm text-blue-200">Your ride, your way</p>
               </div>
             </div>

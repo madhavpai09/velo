@@ -4,14 +4,19 @@ export default function Landing() {
   const navigate = useNavigate();
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-500 via-blue-600 to-green-600 flex items-center justify-center">
+    <div className="min-h-screen bg-gradient-to-br from-blue-500 via-blue-600 to-blue- flex items-center justify-center">
       <div className="max-w-4xl w-full px-6">
-        {/* Logo and Title */}
-        <div className="text-center mb-12">
-          <div className="text-8xl mb-4">🚕</div>
-          <h1 className="text-6xl font-bold text-white mb-2">VELO</h1>
-          <p className="text-xl text-blue-100">Your ride, your way</p>
-        </div>
+        {/* Logo */}
+        <div className="text-center mb-12 flex flex-col items-center">
+  <img
+    src="/0796f710-7ecb-4a40-8176-2eba9ee3c5cd.png"
+    alt="VELO"
+    className="w-40 h-40 mb-0"   // reduced gap
+  />
+
+  <p className="text-xl text-blue-100">Your ride, your way</p>
+</div>
+
 
         {/* Login Options */}
         <div className="grid md:grid-cols-2 gap-8">
