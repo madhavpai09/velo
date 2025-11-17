@@ -14,6 +14,8 @@ interface RideFormProps {
   waitingForDriver: boolean;
   assignedDriver: any;
   onNewRide: () => void;
+  rideOTP?: string | null;
+  showOTP?: boolean;
 }
 
 export default function RideForm({
@@ -29,20 +31,54 @@ export default function RideForm({
   onSelectionModeChange,
   waitingForDriver,
   assignedDriver,
-  onNewRide
+  onNewRide,
+  rideOTP,
+  showOTP
 }: RideFormProps) {
   return (
     <div className="bg-white shadow-lg p-6 overflow-y-auto">
-      {/* Assigned Driver Display */}
+      {/* Assigned Driver with OTP Display */}
       {assignedDriver ? (
         <div className="space-y-4">
-          <div className="bg-green-50 rounded-lg p-4 border-2 border-green-400">
-            <h3 className="font-semibold text-gray-700 mb-3 text-center">✅ Driver Assigned!</h3>
+          <div className={`rounded-lg p-4 border-2 ${
+            showOTP ? 'bg-green-50 border-green-400' : 'bg-blue-50 border-blue-400'
+          }`}>
+            <h3 className="font-semibold text-gray-700 mb-3 text-center">
+              {showOTP ? '🔐 Ride OTP Generated!' : '✅ Driver Assigned!'}
+            </h3>
+            
+            {/* OTP Display */}
+            {showOTP && rideOTP && (
+              <div className="bg-gradient-to-br from-green-500 to-green-700 rounded-lg p-6 mb-4 text-center">
+                <div className="text-white mb-2">
+                  <div className="text-sm font-semibold mb-1">Share this OTP with driver</div>
+                  <div className="text-xs opacity-90 mb-3">Driver needs this to start the ride</div>
+                </div>
+                <div className="bg-white rounded-lg p-4 mb-3">
+                  <div className="text-6xl font-bold text-green-600 tracking-widest">
+                    {rideOTP}
+                  </div>
+                </div>
+                <div className="text-white text-xs opacity-90">
+                  ⚠️ Do not share with anyone else
+                </div>
+              </div>
+            )}
             
             <div className="text-center mb-4">
               <div className="text-4xl mb-2">🚗</div>
               <div className="text-xl font-bold text-gray-800">{assignedDriver.driver_name}</div>
               <div className="text-sm text-gray-600">ID: {assignedDriver.driver_id}</div>
+              
+              {assignedDriver.status && (
+                <div className={`inline-block px-3 py-1 rounded-full text-xs font-semibold mt-2 ${
+                  assignedDriver.status === 'in_progress' 
+                    ? 'bg-green-100 text-green-800' 
+                    : 'bg-yellow-100 text-yellow-800'
+                }`}>
+                  {assignedDriver.status === 'in_progress' ? '🚦 Ride Started' : '⏳ Waiting for OTP'}
+                </div>
+              )}
             </div>
 
             <div className="space-y-3 text-sm">
@@ -60,13 +96,6 @@ export default function RideForm({
                 <div className="bg-white p-3 rounded">
                   <div className="font-semibold text-gray-700 mb-1">Ride ID:</div>
                   <div className="text-gray-600">{assignedDriver.ride_id}</div>
-                </div>
-              )}
-
-              {assignedDriver.status && (
-                <div className="bg-white p-3 rounded">
-                  <div className="font-semibold text-gray-700 mb-1">Status:</div>
-                  <div className="text-gray-600 capitalize">{assignedDriver.status.replace('_', ' ')}</div>
                 </div>
               )}
             </div>

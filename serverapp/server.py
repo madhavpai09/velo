@@ -3,6 +3,7 @@ import requests
 import time
 import sys
 import os
+import random
 sys.path.insert(0, os.path.dirname(__file__))
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
@@ -12,6 +13,7 @@ from models.schemas import RideCreate, DriverCreate, UpdateMatchPayload
 from api.routes import router as api_router
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Dict
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="Orchestrator Server")
@@ -263,6 +265,41 @@ def update_match(payload: UpdateMatchPayload, db: Session = Depends(get_db)):
         print(f"ℹ️  Match already exists: User {payload.user_id} ↔ Driver {payload.driver_id}")
         return {"message": "match already exists", "matched_id": existing_match.id}
 
+ride_otps: Dict[int, str] = {}
+
+@app.post("/api/ride/{ride_id}/generate-otp")
+async def generate_ride_otp(ride_id: int):
+    """Generate OTP for ride start verification"""
+    # Generate 4-digit OTP
+    otp = str(random.randint(1000, 9999))
+    ride_otps[ride_id] = otp
+    return {
+        "ride_id": ride_id,
+        "otp": otp,
+        "message": "OTP generated successfully"
+    }
+
+@app.post("/api/ride/{ride_id}/verify-otp")
+async def verify_ride_otp(ride_id: int, otp: str):
+    """Verify OTP before starting ride"""
+    stored_otp = ride_otps.get(ride_id)
+    
+    if not stored_otp:
+        raise HTTPException(status_code=404, detail="No OTP found for this ride")
+    
+    if stored_otp != otp:
+        return {
+            "verified": False,
+            "message": "Invalid OTP"
+        }
+    
+    # OTP verified, remove it
+    del ride_otps[ride_id]
+    
+    return {
+        "verified": True,
+        "message": "OTP verified successfully"
+    }
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
