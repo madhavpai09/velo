@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 import requests
 import asyncio
 import sys
@@ -9,123 +10,105 @@ from contextlib import asynccontextmanager
 sys.path.insert(0, os.path.dirname(__file__))
 
 from database.connections import SessionLocal, engine
-from database.models import Base, RideRequest, DriverInfo, MatchedRide
+from database.models import Base, RideRequest, DriverInfo  # avoid MatchedRide ORM for operations that touch created_at
 
 Base.metadata.create_all(bind=engine)
 
+
 # Background task to check for unnotified matches every 3 seconds
 async def notifier_loop():
-    """Background task that checks matched_rides table and notifies clients"""
-    await asyncio.sleep(2)  # Initial delay to let other services start
+    """Background task that checks matched_rides table and notifies clients."""
+    await asyncio.sleep(2)  # Initial delay
     print("🔍 Notifier starting checks...")
-    
+
     while True:
         try:
             await asyncio.sleep(3)
-            
-            # Get database session
+
             db = SessionLocal()
             try:
-                # Find matches that haven't been notified (status = "pending_notification")
-                # Don't process matches that are already accepted/completed
-                unnotified_matches = db.query(MatchedRide).filter(
-                    MatchedRide.status == "pending_notification"
-                ).all()
-                
-                if unnotified_matches:
-                    print(f"\n📢 Found {len(unnotified_matches)} unnotified match(es)")
+                # Select only known columns (avoid selecting created_at)
+                rows = db.execute(text(
+                    "SELECT id, user_id, driver_id, ride_id, status FROM matched_rides WHERE status = :s"
+                ), {"s": "pending_notification"}).fetchall()
+
+                if rows:
+                    print(f"\n📢 Found {len(rows)} unnotified match(es)")
                 else:
-                    print(".", end="", flush=True)  # Show heartbeat
-                
-                for match in unnotified_matches:
-                    print(f"\n📝 Processing match ID: {match.id}")
-                    print(f"   User ID: {match.user_id}")
-                    print(f"   Driver ID: {match.driver_id}")
-                    print(f"   Ride ID: {match.ride_id}")
-                    
-                    # Get ride details - prefer ride_id if available, otherwise fallback to user_id query
+                    print(".", end="", flush=True)
+
+                # Process each match row as a dict (avoid ORM object)
+                for r in rows:
+                    match = {
+                        "id": r[0],
+                        "user_id": r[1],
+                        "driver_id": r[2],
+                        "ride_id": r[3],
+                        "status": r[4]
+                    }
+                    print(f"\n📝 Processing match ID: {match['id']}")
+                    print(f"   User ID: {match['user_id']}")
+                    print(f"   Driver ID: {match['driver_id']}")
+                    print(f"   Ride ID: {match['ride_id']}")
+
+                    # Find ride details (use ORM on RideRequest)
                     ride = None
-                    if match.ride_id:
-                        ride = db.query(RideRequest).filter(
-                            RideRequest.id == match.ride_id
-                        ).first()
-                    
-                    # Fallback: if ride_id not available or ride not found, try user_id query
+                    if match['ride_id']:
+                        ride = db.query(RideRequest).filter(RideRequest.id == match['ride_id']).first()
+
                     if not ride:
-                        ride = db.query(RideRequest).filter(
-                            RideRequest.user_id == match.user_id
-                        ).order_by(RideRequest.created_at.desc()).first()
-                    
-                    # Get driver details
-                    driver = db.query(DriverInfo).filter(
-                        DriverInfo.driver_id == match.driver_id
-                    ).first()
-                    
+                        ride = db.query(RideRequest).filter(RideRequest.user_id == match['user_id']).order_by(RideRequest.created_at.desc()).first()
+
+                    driver = db.query(DriverInfo).filter(DriverInfo.driver_id == match['driver_id']).first()
+
                     if not ride or not driver:
                         print(f"   ⚠️  Missing ride or driver info")
                         if not ride:
-                            print(f"      Ride not found (ride_id: {match.ride_id}, user_id: {match.user_id})")
+                            print(f"      Ride not found (ride_id: {match['ride_id']}, user_id: {match['user_id']})")
                         if not driver:
-                            print(f"      Driver not found (driver_id: {match.driver_id})")
-                        
-                        # Mark match as failed to prevent infinite retries
-                        match.status = "failed"
-                        db.commit()
-                        print(f"   ❌ Marked match {match.id} as failed - will not retry")
+                            print(f"      Driver not found (driver_id: {match['driver_id']})")
+
+                        # Mark match as failed to avoid infinite retry (use raw SQL update)
+                        try:
+                            db.execute(text("UPDATE matched_rides SET status = :s WHERE id = :id"), {"s": "failed", "id": match['id']})
+                            db.commit()
+                            print(f"   ❌ Marked match {match['id']} as failed - will not retry")
+                        except Exception as e:
+                            db.rollback()
+                            print(f"   ❌ Failed to mark match as failed: {e}")
                         continue
-                    
-                    # FIXED: Port mapping logic
-                    # User port is the user_id itself (since user_id defaults to port in user_client.py)
-                    user_port = match.user_id
-                    
-                    # Driver port is the driver_id itself (since it's extracted from port in driver_client.py)
-                    driver_port = match.driver_id
-                    
+
+                    # Ports (python clients) mapping
+                    user_port = match['user_id']
+                    driver_port = match['driver_id']
+
                     print(f"   🔌 User port: {user_port}, Driver port: {driver_port}")
-                    
-                    # Prepare notification data
-                    match_data = {
-                        "user_id": match.user_id,
-                        "driver_id": match.driver_id,
-                        "ride_id": ride.id,
-                        "source_location": ride.source_location,
-                        "dest_location": ride.dest_location,
-                        "driver_location": driver.current_location
-                    }
-                    
-                    # 1. Notify orchestrator
+
+                    # Notify orchestrator (best-effort)
                     try:
                         requests.post(
                             "http://localhost:8000/update_match/",
-                            json={
-                                "user_id": match.user_id,
-                                "driver_id": match.driver_id
-                            },
+                            json={"user_id": match['user_id'], "driver_id": match['driver_id']},
                             timeout=2
                         )
                         print(f"   ✅ Orchestrator notified")
                     except Exception as e:
                         print(f"   ⚠️  Could not notify orchestrator: {e}")
-                    
-                    # 2. Notify user client (check if web user or Python client)
+
+                    # Notify user client
                     user_notified = False
                     is_web_user = False
-                    
                     try:
-                        # Try to check if user has a port (Python client)
-                        health_check = requests.get(
-                            f"http://localhost:{user_port}/status",
-                            timeout=0.5
-                        )
+                        health_check = requests.get(f"http://localhost:{user_port}/status", timeout=0.5)
                         if health_check.status_code == 200:
-                            # Python client - try to notify
+                            # Python user client - POST assignment
                             try:
                                 response = requests.post(
                                     f"http://localhost:{user_port}/ride/assigned",
                                     json={
                                         "ride_id": ride.id,
-                                        "driver_id": match.driver_id,
-                                        "driver_name": f"Driver {match.driver_id}",
+                                        "driver_id": match['driver_id'],
+                                        "driver_name": f"Driver {match['driver_id']}",
                                         "driver_location": driver.current_location,
                                         "pickup_location": ride.source_location,
                                         "dropoff_location": ride.dest_location
@@ -138,41 +121,32 @@ async def notifier_loop():
                             except Exception as e:
                                 print(f"   ⚠️  Could not notify user client on port {user_port}: {e}")
                     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-                        # Port doesn't exist - this is a web user
+                        # web user
                         is_web_user = True
-                        print(f"   ℹ️  User {match.user_id} is a web user (no port) - will poll for assignment")
-                    
-                    # For web users, we keep the match in database and let them poll
+                        print(f"   ℹ️  User {match['user_id']} is a web user (no port) - will poll for assignment")
+
                     if is_web_user:
-                        user_notified = True  # Consider it "notified" since it's in DB for polling
-                    
-                    # 3. Notify driver client (with retry and health check)
-                    # For web drivers, we'll let them poll for assignments
-                    # For Python clients, try to notify via port
+                        user_notified = True  # DB presence suffices for web users
+
+                    # Notify driver client
                     driver_notified = False
                     is_web_driver = False
-                    
-                    # First check if driver has a port (Python client) or is web driver
                     try:
-                        health_check = requests.get(
-                            f"http://localhost:{driver_port}/status",
-                            timeout=0.5  # Quick check
-                        )
+                        health_check = requests.get(f"http://localhost:{driver_port}/status", timeout=0.5)
                         if health_check.status_code == 200:
-                            # Python client - try to notify
+                            # Python driver client
                             for attempt in range(3):
                                 try:
                                     response = requests.post(
                                         f"http://localhost:{driver_port}/ride/assigned",
                                         json={
                                             "ride_id": ride.id,
-                                            "user_id": match.user_id,
+                                            "user_id": match['user_id'],
                                             "pickup_location": ride.source_location,
                                             "dropoff_location": ride.dest_location
                                         },
                                         timeout=5
                                     )
-                                    
                                     if response.status_code == 200:
                                         print(f"   ✅ Driver client notified on port {driver_port}")
                                         driver_notified = True
@@ -184,53 +158,58 @@ async def notifier_loop():
                         else:
                             is_web_driver = True
                     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-                        # Port doesn't exist - this is a web driver
                         is_web_driver = True
-                        print(f"   ℹ️  Driver {match.driver_id} is a web driver (no port) - will poll for assignment")
-                    
-                    # For web drivers, we keep the match in database and let them poll
+                        print(f"   ℹ️  Driver {match['driver_id']} is a web driver (no port) - will poll for assignment")
+
                     if is_web_driver:
-                        print(f"   ✅ Match stored - web driver {match.driver_id} can poll for assignment")
-                        driver_notified = True  # Consider it "notified" since it's in DB for polling
-                    
-                    # Check if both user and driver are notified (or web clients)
+                        print(f"   ✅ Match stored - web driver {match['driver_id']} can poll for assignment")
+                        driver_notified = True
+
+                    # Now decide next steps based on notifications
                     if user_notified and driver_notified:
-                        # Both notified - keep match in DB for web clients to poll, or delete for Python clients
+                        # If both are web clients, keep match. If both python clients, delete match row
                         if is_web_user or is_web_driver:
-                            # Web client(s) - keep match in DB for polling
-                            print(f"   ✅ Match stored - web client(s) can poll for assignment")
-                            db.commit()
-                            continue  # Skip deletion, let clients poll for it
+                            # keep match in DB (already present)
+                            try:
+                                db.commit()
+                                print(f"   ✅ Match kept in DB for web polling (match id: {match['id']})")
+                            except Exception as e:
+                                db.rollback()
+                                print(f"   ⚠️  Failed to commit after notifications: {e}")
                         else:
-                            # Both Python clients - delete match after notification
-                            db.delete(match)
-                            db.commit()
-                            print(f"   ✅ Match deleted from database after notification")
+                            # both python clients -> delete the match row
+                            try:
+                                db.execute(text("DELETE FROM matched_rides WHERE id = :id"), {"id": match['id']})
+                                db.commit()
+                                print(f"   ✅ Match {match['id']} deleted from DB after notifications")
+                            except Exception as e:
+                                db.rollback()
+                                print(f"   ⚠️  Failed to delete match {match['id']}: {e}")
                     elif not driver_notified:
-                        print(f"   ❌ FAILED to notify driver {driver_port} after 3 attempts")
-                        print(f"   📌 Marking driver {match.driver_id} as unavailable in database")
-                        
-                        # Mark driver as unavailable
-                        driver.available = False
-                        
-                        # Re-queue the ride by changing status back to pending
-                        ride.status = "pending"
-                        
-                        # Delete the failed match
-                        db.delete(match)
-                        db.commit()
-                        print(f"   🔄 Ride {ride.id} re-queued for another driver")
+                        print(f"   ❌ FAILED to notify driver {driver_port}")
+                        # mark driver unavailable, requeue ride, delete match
+                        try:
+                            db.execute(text("UPDATE driver_info SET available = false WHERE driver_id = :did"), {"did": match['driver_id']})
+                            db.execute(text("UPDATE ride_requests SET status = 'pending' WHERE id = :rid"), {"rid": ride.id})
+                            db.execute(text("DELETE FROM matched_rides WHERE id = :id"), {"id": match['id']})
+                            db.commit()
+                            print(f"   🔄 Ride {ride.id} re-queued for another driver")
+                        except Exception as e:
+                            db.rollback()
+                            print(f"   ⚠️  Failed to requeue ride after driver notification failure: {e}")
                         continue
                     elif not user_notified:
                         print(f"   ❌ FAILED to notify user {user_port}")
-                        # Keep match in DB - user might come online later (for web users)
-                        # Or delete if it's been too long (could add timeout logic later)
-                        db.commit()
+                        # For now keep match in DB for retry
+                        try:
+                            db.commit()
+                        except:
+                            db.rollback()
                         continue
-                    
+
             finally:
                 db.close()
-                
+
         except Exception as e:
             print(f"\n⚠️  Notifier loop error: {e}")
             import traceback
@@ -265,41 +244,29 @@ def health():
 @app.get("/stats")
 def get_stats(db: Session = Depends(get_db)):
     """Get notification statistics"""
-    pending = db.query(MatchedRide).filter(MatchedRide.status == "pending_notification").count()
-    
-    return {
-        "pending_notifications": pending,
-        "note": "Matches are deleted after successful notification"
-    }
+    try:
+        cnt = db.execute(text("SELECT count(*) FROM matched_rides WHERE status = :s"), {"s": "pending_notification"}).scalar()
+        return {"pending_notifications": int(cnt or 0), "note": "Matches are deleted after successful notification for Python clients"}
+    except Exception as e:
+        return {"pending_notifications": 0, "error": str(e)}
 
 
 @app.get("/debug/matches")
 def debug_matches(db: Session = Depends(get_db)):
     """Debug endpoint to see all matches in database"""
-    all_matches = db.query(MatchedRide).all()
-    return {
-        "count": len(all_matches),
-        "matches": [
-            {
-                "id": m.id,
-                "user_id": m.user_id,
-                "driver_id": m.driver_id,
-                "ride_id": m.ride_id,
-                "status": m.status
-            }
-            for m in all_matches
-        ]
-    }
+    try:
+        rows = db.execute(text("SELECT id, user_id, driver_id, ride_id, status FROM matched_rides ORDER BY id DESC")).fetchall()
+        matches = [{"id": r[0], "user_id": r[1], "driver_id": r[2], "ride_id": r[3], "status": r[4]} for r in rows]
+        return {"count": len(matches), "matches": matches}
+    except Exception as e:
+        return {"count": 0, "matches": [], "error": str(e)}
 
 
 @app.get("/debug/active-clients")
 def check_active_clients(db: Session = Depends(get_db)):
     """Check which clients (users and drivers) are actually running"""
-    results = {
-        "drivers": [],
-        "users": []
-    }
-    
+    results = {"drivers": [], "users": []}
+
     # Check drivers
     drivers = db.query(DriverInfo).all()
     for driver in drivers:
@@ -319,7 +286,7 @@ def check_active_clients(db: Session = Depends(get_db)):
                 "online": False,
                 "available": False
             })
-    
+
     # Check users from recent rides
     rides = db.query(RideRequest).limit(10).all()
     checked_users = set()
@@ -340,7 +307,7 @@ def check_active_clients(db: Session = Depends(get_db)):
                     "port": port,
                     "online": False
                 })
-    
+
     return results
 
 

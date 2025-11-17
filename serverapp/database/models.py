@@ -6,10 +6,11 @@ class RideRequest(Base):
     __tablename__ = "ride_requests"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False)
-    source_location = Column(String, nullable=False)  # Changed from 'pickup'
-    dest_location = Column(String, nullable=False)    # Changed from 'drop'
-    status = Column(String, default="pending")        # pending, matched
+    source_location = Column(String, nullable=False)
+    dest_location = Column(String, nullable=False)
+    status = Column(String, default="pending")  # pending, broadcasting, matched, accepted, in_progress, completed
     created_at = Column(DateTime, default=datetime.utcnow)
+   
 
 class DriverInfo(Base):
     __tablename__ = "driver_info"
@@ -23,5 +24,15 @@ class MatchedRide(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False)
     driver_id = Column(Integer, nullable=False)
-    ride_id = Column(Integer, nullable=True)  # Store ride_id for direct lookup
-    status = Column(String, default="ongoing")
+    ride_id = Column(Integer, nullable=True)
+    status = Column(String, default="pending_notification")  # pending_notification, notified, accepted, rejected
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class RideBroadcast(Base):
+    """Track which drivers have been notified about a ride"""
+    __tablename__ = "ride_broadcasts"
+    id = Column(Integer, primary_key=True, index=True)
+    ride_id = Column(Integer, nullable=False)
+    driver_id = Column(Integer, nullable=False)
+    status = Column(String, default="pending")  # pending, accepted, rejected, expired
+    created_at = Column(DateTime, default=datetime.utcnow)

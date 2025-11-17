@@ -29,8 +29,6 @@ app.add_middleware(
 # Include the API router with /api prefix
 app.include_router(api_router, prefix="/api")
 
-
-
 def get_db():
     db = SessionLocal()
     try:
@@ -59,7 +57,7 @@ def get_ride_request(ride_id: int, db: Session = Depends(get_db)):
             raise HTTPException(status_code=404, detail="Ride request not found")
         
         # Get matched driver if exists
-        matched = db.query(MatchedRide).filter(MatchedRide.user_id == ride_request.user_id).first()
+        matched = db.query(MatchedRide).filter(MatchedRide.ride_id == ride_request.id).first()
         driver_id = matched.driver_id if matched else None
         
         return {
@@ -69,7 +67,7 @@ def get_ride_request(ride_id: int, db: Session = Depends(get_db)):
             "user_id": ride_request.user_id,
             "status": ride_request.status,
             "created_at": ride_request.created_at.isoformat(),
-            "driver_id": driver_id  # Add this line
+            "driver_id": driver_id
         }
     except HTTPException:
         raise
@@ -150,6 +148,8 @@ def set_driver_availability(driver_id: str, is_available: bool, db: Session = De
         driver.available = is_available
         db.commit()
         
+        print(f"📊 Driver {driver_id} availability: {is_available}")
+        
         return {"message": "Availability updated", "is_available": is_available}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -163,36 +163,11 @@ def update_ride_status(ride_id: int, status: str, db: Session = Depends(get_db))
         if not ride:
             raise HTTPException(status_code=404, detail=f"Ride {ride_id} not found")
         
-        # Update ride status
         old_status = ride.status
         ride.status = status
         db.commit()
         
         print(f"📊 Ride {ride_id} status: {old_status} → {status}")
-        
-        # If ride completed, mark driver as available AND clean up match
-        if status == "completed":
-            # Find the matched ride to get driver_id
-            matched = db.query(MatchedRide).filter(
-                MatchedRide.user_id == ride.user_id
-            ).first()
-            
-            if matched:
-                driver = db.query(DriverInfo).filter(
-                    DriverInfo.driver_id == matched.driver_id
-                ).first()
-                
-                if driver:
-                    driver.available = True
-                    db.commit()
-                    print(f"✅ Driver {matched.driver_id} marked as AVAILABLE")
-                
-                # DELETE the match record so driver can be matched again
-                db.delete(matched)
-                db.commit()
-                print(f"🗑️  Match record DELETED for driver {matched.driver_id}")
-            else:
-                print(f"⚠️  No match record found for ride {ride_id}")
         
         return {
             "message": "Ride status updated",
@@ -233,6 +208,7 @@ def upsert_driver(driver: DriverCreate, db: Session = Depends(get_db)):
 def update_match(payload: UpdateMatchPayload, db: Session = Depends(get_db)):
     ride = db.query(RideRequest).filter(RideRequest.user_id == payload.user_id).first()
     driver = db.query(DriverInfo).filter(DriverInfo.driver_id == payload.driver_id).first()
+    
     if ride:
         ride.status = "matched"
     if driver:
@@ -245,12 +221,12 @@ def update_match(payload: UpdateMatchPayload, db: Session = Depends(get_db)):
     ).first()
     
     if not existing_match:
-        # Get ride_id from the ride if available
         ride_id = ride.id if ride else None
         matched = MatchedRide(
             user_id=payload.user_id, 
             driver_id=payload.driver_id,
-            ride_id=ride_id  # Store ride_id for direct lookup
+            ride_id=ride_id,
+            status="pending_notification"
         )
         db.add(matched)
         db.commit()
@@ -258,7 +234,6 @@ def update_match(payload: UpdateMatchPayload, db: Session = Depends(get_db)):
         print(f"📝 Match recorded: User {payload.user_id} ↔ Driver {payload.driver_id} (Ride ID: {ride_id})")
         return {"message": "match recorded", "matched_id": matched.id}
     else:
-        # Update existing match with ride_id if not already set
         if ride and not existing_match.ride_id:
             existing_match.ride_id = ride.id
             db.commit()
@@ -270,9 +245,9 @@ ride_otps: Dict[int, str] = {}
 @app.post("/api/ride/{ride_id}/generate-otp")
 async def generate_ride_otp(ride_id: int):
     """Generate OTP for ride start verification"""
-    # Generate 4-digit OTP
     otp = str(random.randint(1000, 9999))
     ride_otps[ride_id] = otp
+    print(f"🔐 Generated OTP {otp} for ride {ride_id}")
     return {
         "ride_id": ride_id,
         "otp": otp,
@@ -295,11 +270,47 @@ async def verify_ride_otp(ride_id: int, otp: str):
     
     # OTP verified, remove it
     del ride_otps[ride_id]
+    print(f"✅ OTP verified for ride {ride_id}")
     
     return {
         "verified": True,
         "message": "OTP verified successfully"
     }
+
+@app.post("/api/driver/{driver_id}/start-ride/{ride_id}")
+async def start_ride(driver_id: int, ride_id: int, db: Session = Depends(get_db)):
+    """Start a ride after OTP verification"""
+    try:
+        ride = db.query(RideRequest).filter(RideRequest.id == ride_id).first()
+        if not ride:
+            raise HTTPException(status_code=404, detail="Ride not found")
+        
+        # Update ride status to in_progress
+        ride.status = "in_progress"
+        
+        # Update match status
+        match = db.query(MatchedRide).filter(
+            MatchedRide.ride_id == ride_id,
+            MatchedRide.driver_id == driver_id
+        ).first()
+        if match:
+            match.status = "in_progress"
+        
+        db.commit()
+        
+        print(f"🚗 Ride {ride_id} started by driver {driver_id}")
+        
+        return {
+            "message": "Ride started",
+            "ride_id": ride_id,
+            "status": "in_progress"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

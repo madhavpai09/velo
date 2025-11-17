@@ -53,7 +53,7 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
-  // Poll for ride status
+  // Poll for ride status (only runs when userId is set)
   useEffect(() => {
     if (!userId || !isUserOnline) return;
 
@@ -62,7 +62,8 @@ export default function Home() {
         const response = await fetch(`http://localhost:8000/api/user/${userId}/ride-status`);
         if (response.ok) {
           const data = await response.json();
-          
+          // console.log("user ride-status poll:", data);
+
           if (data.has_ride) {
             setWaitingForDriver(false);
             
@@ -78,12 +79,13 @@ export default function Home() {
               };
               
               setAssignedDriver(driverInfo);
-              
+
               if (data.ride_id) {
                 setRideId(data.ride_id);
-                
-                // Generate OTP when driver is assigned (status = accepted)
+
+                // Generate OTP when driver is accepted (status = accepted)
                 if (data.status === 'accepted' && !rideOTP) {
+                  console.log(`Driver accepted ride ${data.ride_id} — generating OTP...`);
                   generateOTP(data.ride_id);
                 }
               }
@@ -92,7 +94,12 @@ export default function Home() {
               setShowOTP(false);
               setRideOTP(null);
             }
+          } else {
+            // no ride
+            // keep waitingForDriver state as is, don't clear assignedDriver immediately
           }
+        } else {
+          console.warn('ride-status poll returned non-ok', response.status);
         }
       } catch (error) {
         console.error('Failed to poll ride status:', error);
@@ -113,6 +120,8 @@ export default function Home() {
         setRideOTP(data.otp);
         setShowOTP(true);
         console.log('✅ OTP Generated:', data.otp);
+      } else {
+        console.warn('Failed to generate OTP - server returned non-ok:', response.status);
       }
     } catch (error) {
       console.error('Failed to generate OTP:', error);
@@ -141,15 +150,21 @@ export default function Home() {
 
     setLoading(true);
     try {
+      // Use explicit usedUserId and ensure we store it in state so polling starts
+      const usedUserId = userId || 7000;
+      // Ensure UI reflects that userId is set (so polling starts)
+      setUserId(usedUserId);
+      setShowUserIdInput(false);
+      
       const response = await createRideRequest(
         pickupLocation,
         dropoffLocation,
-        userId || 7000
+        usedUserId
       );
 
       setRideId(response.data.id);
       setWaitingForDriver(true);
-      console.log('✅ Ride created:', response.data);
+      console.log('✅ Ride created:', response.data, 'for user:', usedUserId);
     } catch (error: any) {
       console.error('❌ Failed to create ride:', error);
       alert(`Failed to create ride: ${error.message}`);
@@ -229,7 +244,7 @@ export default function Home() {
                       setShowUserIdInput(false);
                       setIsUserOnline(true);
                     } else {
-                      alert('Please enter a valid User ID');
+                      alert('Please enter a valid User ID or leave blank to use default 7000 (it will be auto-set when you request).');
                     }
                   }}
                   className="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
@@ -238,7 +253,7 @@ export default function Home() {
                 </button>
               </div>
               <p className="text-xs text-gray-500 mt-2">
-                Each user needs a unique ID (e.g., 6000, 7000, 8000)
+                Each user needs a unique ID (e.g., 6000, 7000, 8000). Leave blank to use default 7000 (will be auto-set on request).
               </p>
             </div>
           )}
