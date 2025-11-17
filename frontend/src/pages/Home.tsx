@@ -1,3 +1,4 @@
+
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import MapView from '../shared/MapView';
@@ -8,7 +9,6 @@ import {
   getRideStatus,
   DriverForMap 
 } from '../utils/api';
-import { getAddressFromCoordinates } from '../utils/locationUtils';
 
 interface AssignedDriver {
   ride_id?: number;
@@ -17,20 +17,18 @@ interface AssignedDriver {
   driver_location: string;
   pickup_location: string;
   dropoff_location: string;
-  status?: string;
 }
 
 export default function Home() {
   const navigate = useNavigate();
   const [pickupLocation, setPickupLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [dropoffLocation, setDropoffLocation] = useState<{ lat: number; lng: number } | null>(null);
-  const [pickupAddress, setPickupAddress] = useState<string>('');
-  const [dropoffAddress, setDropoffAddress] = useState<string>('');
   const [drivers, setDrivers] = useState<DriverForMap[]>([]);
   const [rideId, setRideId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectionMode, setSelectionMode] = useState<'pickup' | 'dropoff'>('pickup');
   
+  // NEW: Track assigned driver
   const [assignedDriver, setAssignedDriver] = useState<AssignedDriver | null>(null);
   const [waitingForDriver, setWaitingForDriver] = useState(false);
   const [isUserOnline, setIsUserOnline] = useState(false);
@@ -67,11 +65,10 @@ export default function Home() {
           const data = await response.json();
           
           if (data.has_ride) {
-            // IMPORTANT: Only show driver info if ride has been ACCEPTED by driver
-            // NOT during "broadcasting" or "pending" status
-            if (data.status === 'accepted' || data.status === 'in_progress') {
-              setWaitingForDriver(false);
-              
+            // Ride has been assigned
+            setWaitingForDriver(false);
+            
+            if (data.status === 'matched' || data.status === 'accepted' || data.status === 'in_progress') {
               setAssignedDriver({
                 ride_id: data.ride_id,
                 driver_id: data.driver_id,
@@ -79,33 +76,12 @@ export default function Home() {
                 driver_location: data.driver_location || 'Unknown',
                 pickup_location: data.pickup_location,
                 dropoff_location: data.dropoff_location,
-                status: data.status,
               });
               
               // Update rideId if we got a new ride
               if (data.ride_id) {
                 setRideId(data.ride_id);
               }
-            } else if (data.status === 'completed' || data.status === 'cancelled') {
-              // Ride completed - clear state
-              if (assignedDriver) {
-                console.log('✅ Ride completed!');
-                setAssignedDriver(null);
-                setRideId(null);
-                setWaitingForDriver(false);
-              }
-            } else {
-              // Still broadcasting or pending - keep showing waiting message
-              console.log(`⏳ Ride status: ${data.status} - still waiting for driver to accept`);
-            }
-          } else {
-            // No active ride
-            if (assignedDriver && assignedDriver.status !== 'pending') {
-              // Ride was completed
-              console.log('✅ Ride completed - no active ride found');
-              setAssignedDriver(null);
-              setRideId(null);
-              setWaitingForDriver(false);
             }
           }
         }
@@ -115,7 +91,7 @@ export default function Home() {
     }, 2000); // Poll every 2 seconds
 
     return () => clearInterval(pollInterval);
-  }, [userId, isUserOnline, assignedDriver]);
+  }, [userId, isUserOnline]);
 
   const fetchDrivers = async () => {
     const driverData = await getAvailableDrivers();
@@ -125,17 +101,9 @@ export default function Home() {
   const handleLocationSelect = (lat: number, lng: number) => {
     if (selectionMode === 'pickup') {
       setPickupLocation({ lat, lng });
-      // Get address for pickup
-      getAddressFromCoordinates(lat, lng).then(address => {
-        setPickupAddress(address);
-      });
       setSelectionMode('dropoff');
     } else {
       setDropoffLocation({ lat, lng });
-      // Get address for dropoff
-      getAddressFromCoordinates(lat, lng).then(address => {
-        setDropoffAddress(address);
-      });
     }
   };
 
@@ -150,14 +118,12 @@ export default function Home() {
       const response = await createRideRequest(
         pickupLocation,
         dropoffLocation,
-        userId || 7000,
-        pickupAddress || `${pickupLocation.lat.toFixed(4)}, ${pickupLocation.lng.toFixed(4)}`,
-        dropoffAddress || `${dropoffLocation.lat.toFixed(4)}, ${dropoffLocation.lng.toFixed(4)}`
+        userId || 7000
       );
 
       setRideId(response.data.id);
       setWaitingForDriver(true);
-      console.log('✅ Ride created - Broadcasting to nearby drivers:', response.data);
+      console.log('✅ Ride created:', response.data);
     } catch (error: any) {
       console.error('❌ Failed to create ride:', error);
       alert(`Failed to create ride: ${error.message}`);
@@ -172,43 +138,7 @@ export default function Home() {
     setWaitingForDriver(false);
     setPickupLocation(null);
     setDropoffLocation(null);
-    setPickupAddress('');
-    setDropoffAddress('');
     setSelectionMode('pickup');
-  };
-
-  const getRideStatusText = (status?: string) => {
-    switch (status) {
-      case 'pending':
-        return 'Finding driver...';
-      case 'matched':
-        return 'Driver found!';
-      case 'accepted':
-        return 'Driver accepted - On the way!';
-      case 'in_progress':
-        return 'Ride in progress';
-      case 'completed':
-        return 'Ride completed';
-      default:
-        return 'Ride assigned';
-    }
-  };
-
-  const getRideStatusColor = (status?: string) => {
-    switch (status) {
-      case 'pending':
-        return 'bg-yellow-50 border-yellow-400 text-yellow-800';
-      case 'matched':
-        return 'bg-blue-50 border-blue-400 text-blue-800';
-      case 'accepted':
-        return 'bg-green-50 border-green-400 text-green-800';
-      case 'in_progress':
-        return 'bg-purple-50 border-purple-400 text-purple-800';
-      case 'completed':
-        return 'bg-gray-50 border-gray-400 text-gray-800';
-      default:
-        return 'bg-blue-50 border-blue-400 text-blue-800';
-    }
   };
 
   return (
@@ -311,8 +241,6 @@ export default function Home() {
           <RideForm
             pickupLocation={pickupLocation}
             dropoffLocation={dropoffLocation}
-            pickupAddress={pickupAddress}
-            dropoffAddress={dropoffAddress}
             onRequestRide={handleRequestRide}
             loading={loading}
             rideId={rideId}
@@ -328,7 +256,7 @@ export default function Home() {
         {/* Map */}
         <div className="flex-1 relative">
           {/* Selection Mode Indicator */}
-          {!assignedDriver && !waitingForDriver && (
+          {!assignedDriver && (
             <div className="absolute top-4 left-4 z-[1000] bg-white rounded-lg shadow-lg p-3">
               <div className="text-xs text-gray-600 mb-1">Click mode:</div>
               <div className={`font-bold text-lg ${
@@ -339,79 +267,26 @@ export default function Home() {
             </div>
           )}
 
-          {/* Waiting for Driver */}
-          {waitingForDriver && !assignedDriver && (
-            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-[1000] bg-white rounded-lg shadow-2xl p-6 min-w-[400px]">
-              <div className="text-center">
-                <div className="text-6xl mb-3 animate-bounce">📡</div>
-                <div className="text-2xl font-bold text-blue-600 mb-2">Finding drivers...</div>
-                <div className="text-sm text-gray-600 mb-3">
-                  Broadcasting to nearby drivers
-                </div>
-                <div className="text-xs text-gray-500">
-                  First driver to accept will be assigned to your ride
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Active Ride Status */}
+          {/* Assigned Driver Popup */}
           {assignedDriver && (
-            <div className={`absolute top-4 left-1/2 transform -translate-x-1/2 z-[1000] bg-white rounded-lg shadow-2xl p-6 min-w-[400px] border-2 ${getRideStatusColor(assignedDriver.status)}`}>
+            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-[1000] bg-white rounded-lg shadow-2xl p-6 min-w-[400px] animate-bounce">
               <div className="text-center">
-                <div className="text-6xl mb-3">
-                  {assignedDriver.status === 'accepted' ? '🚗' :
-                   assignedDriver.status === 'in_progress' ? '🚙' : '✅'}
-                </div>
-                <div className="text-2xl font-bold mb-2">
-                  {getRideStatusText(assignedDriver.status)}
-                </div>
-                <div className="bg-white p-4 rounded-lg mb-4 border">
+                <div className="text-6xl mb-3">🎉</div>
+                <div className="text-2xl font-bold text-green-600 mb-2">Driver Assigned!</div>
+                <div className="bg-blue-50 p-4 rounded-lg mb-4">
                   <div className="text-lg font-semibold text-gray-800 mb-2">
                     🚗 {assignedDriver.driver_name}
                   </div>
                   <div className="text-sm text-gray-600">
                     Driver ID: {assignedDriver.driver_id}
                   </div>
-                  <div className="text-sm text-gray-600 mt-2">
-                    Ride ID: {assignedDriver.ride_id}
-                  </div>
                 </div>
-                
-                {/* Ride Details */}
-                <div className="text-left space-y-2 mb-4 text-sm">
-                  <div className="bg-white/50 p-2 rounded">
-                    <div className="font-semibold text-gray-700">📍 Pickup:</div>
-                    <div className="text-gray-600 text-xs">{assignedDriver.pickup_location}</div>
-                  </div>
-                  <div className="bg-white/50 p-2 rounded">
-                    <div className="font-semibold text-gray-700">🎯 Dropoff:</div>
-                    <div className="text-gray-600 text-xs">{assignedDriver.dropoff_location}</div>
-                  </div>
-                </div>
-
-                {/* Status Messages */}
-                {assignedDriver.status === 'accepted' && (
-                  <div className="bg-green-100 border border-green-300 rounded-lg p-3 mb-4">
-                    <div className="text-sm font-semibold text-green-800">
-                      🚗 Your driver is on the way to pick you up!
-                    </div>
-                  </div>
-                )}
-                
-                {assignedDriver.status === 'in_progress' && (
-                  <div className="bg-purple-100 border border-purple-300 rounded-lg p-3 mb-4">
-                    <div className="text-sm font-semibold text-purple-800">
-                      🚙 Ride in progress - Enjoy your trip!
-                    </div>
-                  </div>
-                )}
-
-                <div className="text-xs text-gray-500">
-                  {assignedDriver.status === 'accepted' && 'Driver will arrive shortly'}
-                  {assignedDriver.status === 'in_progress' && 'You will arrive at your destination soon'}
-                  {assignedDriver.status === 'matched' && 'Driver has been matched to your ride'}
-                </div>
+                <button
+                  onClick={handleNewRide}
+                  className="bg-blue-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-blue-700"
+                >
+                  Request Another Ride
+                </button>
               </div>
             </div>
           )}
@@ -419,7 +294,7 @@ export default function Home() {
           <MapView
             center={mapCenter}
             zoom={13}
-            onLocationSelect={!assignedDriver && !waitingForDriver ? handleLocationSelect : undefined}
+            onLocationSelect={!assignedDriver ? handleLocationSelect : undefined}
             pickupMarker={pickupLocation}
             dropoffMarker={dropoffLocation}
             drivers={drivers}
@@ -429,3 +304,4 @@ export default function Home() {
     </div>
   );
 }
+

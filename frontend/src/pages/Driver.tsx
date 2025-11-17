@@ -17,7 +17,6 @@ export default function Driver() {
   const [isAvailable, setIsAvailable] = useState(false);
   const [currentLocation, setCurrentLocation] = useState<{ lat: number; lng: number }>({ lat: 12.9716, lng: 77.5946 });
   const [currentRide, setCurrentRide] = useState<any>(null);
-  const [pendingRide, setPendingRide] = useState<any>(null); // NEW: Pending ride offer
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<DriverStatus | null>(null);
   const isAvailableRef = useRef(isAvailable);
@@ -40,7 +39,7 @@ export default function Driver() {
   // Bangalore, India coordinates
   const mapCenter: [number, number] = [12.9716, 77.5946];
 
-  // Poll for driver status when registered
+  // Poll for driver status when registered (read-only, don't change availability)
   useEffect(() => {
     if (!isRegistered || !driverId) return;
 
@@ -51,6 +50,8 @@ export default function Driver() {
           const driverStatus = await getDriverStatus(numericId);
           if (driverStatus) {
             setStatus(driverStatus);
+            // Don't automatically update isAvailable - only user can toggle it
+            // Only sync if status is null (initial load)
             if (status === null) {
               setIsAvailable(driverStatus.available || false);
             }
@@ -59,14 +60,14 @@ export default function Driver() {
       } catch (error) {
         console.error('Failed to poll driver status:', error);
       }
-    }, 3000);
+    }, 3000); // Poll every 3 seconds (read-only)
 
     return () => clearInterval(pollInterval);
   }, [isRegistered, driverId, status]);
 
   // Poll for ride assignments when driver is online and available
   useEffect(() => {
-    if (!isRegistered || !driverId || !isAvailable || pendingRide || currentRide) return;
+    if (!isRegistered || !driverId || !isAvailable) return;
 
     const pollRideInterval = setInterval(async () => {
       try {
@@ -75,26 +76,29 @@ export default function Driver() {
           const response = await fetch(`http://localhost:8000/api/driver/${numericId}/pending-ride`);
           if (response.ok) {
             const data = await response.json();
-            if (data.has_ride) {
-              console.log('🎉 New ride offer!', data);
-              setPendingRide(data);
-              // Play notification sound (optional)
-              const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBjaL0fPTgjMGHm7A7+OZQQ0RVKvl7q1aFglEnuHzvmweBzOG0fPUhC4HHXjD6+WORxAQT6nt7q1aFwlBm+HywHAcCDKCz/TVhzEHHXfD7OOVQQ4PUKnm7qxZFwhBnuLzwnEcCDGCz/PWhzQHHXfD7OOVQQ8PUqjn7KtaFghAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFghAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQhAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7KtbFQdAneLzwnEcCDGBz/PWhzQHHXbD7OOVQQ8PUqjn7A==');
-              audio.play().catch(() => {});
+            if (data.has_ride && !currentRide) {
+              console.log('🎉 New ride assigned!', data);
+              setCurrentRide(data);
+              setIsAvailable(false); // Driver is now on a ride
+              // Auto-accept the ride
+              await fetch(`http://localhost:8000/api/driver/${numericId}/accept-ride/${data.match_id}`, {
+                method: 'POST'
+              });
+              alert(`🚨 New Ride Assigned!\nRide ID: ${data.ride_id}\nUser ID: ${data.user_id}\nPickup: ${data.pickup_location}\nDropoff: ${data.dropoff_location}`);
             }
           }
         }
       } catch (error) {
         console.error('Failed to poll for ride assignments:', error);
       }
-    }, 2000);
+    }, 2000); // Poll every 2 seconds for ride assignments
 
     return () => clearInterval(pollRideInterval);
-  }, [isRegistered, driverId, isAvailable, currentRide, pendingRide]);
+  }, [isRegistered, driverId, isAvailable, currentRide]);
 
   // Poll for current active ride when driver is on a ride
   useEffect(() => {
-    if (!isRegistered || !driverId || isAvailable || !currentRide) return;
+    if (!isRegistered || !driverId || isAvailable) return;
 
     const pollCurrentRideInterval = setInterval(async () => {
       try {
@@ -104,10 +108,12 @@ export default function Driver() {
           if (response.ok) {
             const data = await response.json();
             if (data.has_ride) {
+              // Update current ride info
               if (!currentRide || currentRide.ride_id !== data.ride_id) {
                 setCurrentRide(data);
               }
             } else {
+              // No active ride - driver should be available
               if (currentRide) {
                 setCurrentRide(null);
                 setIsAvailable(true);
@@ -118,37 +124,56 @@ export default function Driver() {
       } catch (error) {
         console.error('Failed to poll for current ride:', error);
       }
-    }, 2000);
+    }, 2000); // Poll every 2 seconds
 
     return () => clearInterval(pollCurrentRideInterval);
   }, [isRegistered, driverId, isAvailable, currentRide]);
 
-  // Mark driver as offline when component unmounts
+  // Mark driver as offline when component unmounts (user closes page) or page unloads
   useEffect(() => {
     const handleBeforeUnload = () => {
+      // Mark driver as offline when page is closing
       if (isRegisteredRef.current && driverIdRef.current && isAvailableRef.current) {
         const fullDriverId = driverIdRef.current.startsWith('DRIVER-') 
           ? driverIdRef.current 
           : `DRIVER-${driverIdRef.current}`;
         
+        // Use fetch with keepalive for reliable cleanup on page close
+        // keepalive ensures the request completes even if page is closing
         fetch(`http://localhost:8000/driver/set-availability?driver_id=${encodeURIComponent(fullDriverId)}&is_available=false`, {
           method: 'POST',
           keepalive: true,
-        }).catch(() => {});
+        }).catch(() => {
+          // Silently fail - page is closing anyway
+        });
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      // Mark driver as offline when tab becomes hidden (optional)
+      if (document.hidden && isRegisteredRef.current && driverIdRef.current && isAvailableRef.current) {
+        // You can choose to mark offline when tab is hidden, or only on page close
+        // For now, we'll only mark offline on page close
       }
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
+      // Cleanup: mark driver as offline when component unmounts
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       
       if (isRegistered && driverId && isAvailable) {
         const fullDriverId = driverId.startsWith('DRIVER-') ? driverId : `DRIVER-${driverId}`;
+        // Try to set availability to false (may not complete if page is closing)
         fetch(`http://localhost:8000/driver/set-availability?driver_id=${encodeURIComponent(fullDriverId)}&is_available=false`, {
           method: 'POST',
-          keepalive: true,
-        }).catch(() => {});
+          keepalive: true, // Keep request alive even if page is closing
+        }).catch(() => {
+          // Silently fail - page is closing anyway
+        });
       }
     };
   }, [isRegistered, driverId, isAvailable]);
@@ -186,76 +211,17 @@ export default function Driver() {
       const newAvailability = !isAvailable;
       const fullDriverId = driverId.startsWith('DRIVER-') ? driverId : `DRIVER-${driverId}`;
       
+      // Update backend first
       await setDriverAvailability(fullDriverId, newAvailability);
+      
+      // Only update local state if backend update succeeds
       setIsAvailable(newAvailability);
       
       console.log(`✅ Driver ${newAvailability ? 'online' : 'offline'}`);
     } catch (error: any) {
       console.error('❌ Failed to update availability:', error);
       alert(`Failed to update availability: ${error.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleAcceptRide = async () => {
-    if (!pendingRide) return;
-    
-    setLoading(true);
-    try {
-      const numericId = parseInt(driverId.replace('DRIVER-', '')) || parseInt(driverId);
-      const response = await fetch(`http://localhost:8000/api/driver/${numericId}/accept-ride/${pendingRide.match_id}`, {
-        method: 'POST'
-      });
-      
-      if (response.status === 409) {
-        // Ride was already accepted by another driver
-        alert('⚠️ Ride already accepted by another driver. Too slow!');
-        setPendingRide(null);
-        return;
-      }
-      
-      if (response.ok) {
-        const result = await response.json();
-        console.log('✅ Ride accepted!', result);
-        setCurrentRide(pendingRide);
-        setPendingRide(null);
-        setIsAvailable(false);
-        
-        // Update ride status to accepted
-        await fetch(`http://localhost:8000/ride/${pendingRide.ride_id}/update-status?status=accepted`, {
-          method: 'POST'
-        });
-        
-        alert('🎉 Congratulations! You got the ride!');
-      } else {
-        const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
-        alert(`Failed to accept ride: ${errorData.detail || 'Please try again'}`);
-        setPendingRide(null);
-      }
-    } catch (error: any) {
-      console.error('❌ Failed to accept ride:', error);
-      alert(`Failed to accept ride: ${error.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleDeclineRide = async () => {
-    if (!pendingRide) return;
-    
-    setLoading(true);
-    try {
-      // Update ride status back to pending
-      await fetch(`http://localhost:8000/ride/${pendingRide.ride_id}/update-status?status=pending`, {
-        method: 'POST'
-      });
-      
-      setPendingRide(null);
-      console.log('❌ Ride declined');
-    } catch (error: any) {
-      console.error('❌ Failed to decline ride:', error);
-      alert(`Failed to decline ride: ${error.message}`);
+      // Don't update local state if backend update failed
     } finally {
       setLoading(false);
     }
@@ -285,6 +251,7 @@ export default function Driver() {
               </div>
             </div>
             <div className="flex items-center gap-4">
+              {/* Online Status Indicator */}
               {isRegistered && (
                 <div className="flex items-center gap-2 bg-white/20 px-4 py-2 rounded-lg">
                   <div className={`w-3 h-3 rounded-full ${
@@ -364,73 +331,33 @@ export default function Driver() {
                 </div>
               </div>
 
-              {/* Pending Ride Offer */}
-              {pendingRide && (
-                <div className="bg-blue-50 rounded-lg p-4 border-2 border-blue-400 animate-pulse">
-                  <h3 className="font-semibold text-gray-700 mb-3 flex items-center gap-2">
-                    <span className="text-2xl">🚨</span>
-                    New Ride Offer!
-                  </h3>
-                  <div className="text-sm text-gray-600 space-y-2 mb-4">
-                    <div><span className="font-semibold">Ride ID:</span> {pendingRide.ride_id}</div>
-                    <div><span className="font-semibold">User ID:</span> {pendingRide.user_id}</div>
-                    <div className="pt-2 border-t">
-                      <div className="font-semibold mb-1">📍 Pickup:</div>
-                      <div className="text-xs">{pendingRide.pickup_location}</div>
-                    </div>
-                    <div>
-                      <div className="font-semibold mb-1">🎯 Dropoff:</div>
-                      <div className="text-xs">{pendingRide.dropoff_location}</div>
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={handleAcceptRide}
-                      disabled={loading}
-                      className="flex-1 bg-green-600 text-white px-4 py-3 rounded-lg font-semibold hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {loading ? '...' : '✅ Accept'}
-                    </button>
-                    <button
-                      onClick={handleDeclineRide}
-                      disabled={loading}
-                      className="flex-1 bg-red-600 text-white px-4 py-3 rounded-lg font-semibold hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {loading ? '...' : '❌ Decline'}
-                    </button>
-                  </div>
-                </div>
-              )}
-
               {/* Availability Toggle */}
-              {!pendingRide && (
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="font-semibold text-gray-700">Availability</span>
-                    <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                      isAvailable ? 'bg-green-100 text-green-800' : 
-                      currentRide ? 'bg-yellow-100 text-yellow-800' :
-                      'bg-gray-100 text-gray-800'
-                    }`}>
-                      {isAvailable ? 'Available' : currentRide ? 'On Ride' : 'Unavailable'}
-                    </span>
-                  </div>
-                  <button
-                    onClick={handleToggleAvailability}
-                    disabled={loading || currentRide}
-                    className={`w-full px-6 py-3 rounded-lg font-semibold transition-colors ${
-                      isAvailable
-                        ? 'bg-red-600 text-white hover:bg-red-700'
-                        : 'bg-green-600 text-white hover:bg-green-700'
-                    } disabled:bg-gray-400 disabled:cursor-not-allowed`}
-                    title={currentRide ? 'Complete your current ride first' : ''}
-                  >
-                    {loading ? 'Updating...' : 
-                     currentRide ? '⏸️ On Ride (Complete to toggle)' :
-                     isAvailable ? '🔴 Go Offline' : '🟢 Go Online'}
-                  </button>
+              <div className="bg-gray-50 rounded-lg p-4">
+                <div className="flex items-center justify-between mb-4">
+                  <span className="font-semibold text-gray-700">Availability</span>
+                  <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                    isAvailable ? 'bg-green-100 text-green-800' : 
+                    currentRide ? 'bg-yellow-100 text-yellow-800' :
+                    'bg-gray-100 text-gray-800'
+                  }`}>
+                    {isAvailable ? 'Available' : currentRide ? 'On Ride' : 'Unavailable'}
+                  </span>
                 </div>
-              )}
+                <button
+                  onClick={handleToggleAvailability}
+                  disabled={loading || currentRide}
+                  className={`w-full px-6 py-3 rounded-lg font-semibold transition-colors ${
+                    isAvailable
+                      ? 'bg-red-600 text-white hover:bg-red-700'
+                      : 'bg-green-600 text-white hover:bg-green-700'
+                  } disabled:bg-gray-400 disabled:cursor-not-allowed`}
+                  title={currentRide ? 'Complete your current ride first' : ''}
+                >
+                  {loading ? 'Updating...' : 
+                   currentRide ? '⏸️ On Ride (Complete to toggle)' :
+                   isAvailable ? '🔴 Go Offline' : '🟢 Go Online'}
+                </button>
+              </div>
 
               {/* Current Location */}
               <div className="bg-gray-50 rounded-lg p-4">
@@ -444,8 +371,19 @@ export default function Driver() {
                 </p>
               </div>
 
+              {/* Status Info */}
+              {status && (
+                <div className="bg-blue-50 rounded-lg p-4">
+                  <h3 className="font-semibold text-gray-700 mb-2">Status</h3>
+                  <div className="text-sm text-gray-600 space-y-1">
+                    <div>Location: {status.current_location || 'Not set'}</div>
+                    <div>Available: {status.available ? 'Yes' : 'No'}</div>
+                  </div>
+                </div>
+              )}
+
               {/* Current Ride */}
-              {currentRide && !pendingRide && (
+              {currentRide && (
                 <div className="bg-yellow-50 rounded-lg p-4 border-2 border-yellow-400">
                   <h3 className="font-semibold text-gray-700 mb-3">🚨 Active Ride</h3>
                   <div className="text-sm text-gray-600 space-y-2 mb-4">
@@ -472,18 +410,22 @@ export default function Driver() {
                           { method: 'POST' }
                         );
                         if (response.ok) {
+                          const result = await response.json();
                           alert(`✅ Ride ${currentRide.ride_id} completed!\nYou are now available for new rides.`);
                           setCurrentRide(null);
                           setIsAvailable(true);
+                          // Update availability in backend
                           await setDriverAvailability(
                             driverId.startsWith('DRIVER-') ? driverId : `DRIVER-${driverId}`,
                             true
                           );
                         } else {
                           const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                          console.error('Complete ride error:', errorData);
                           alert(`Failed to complete ride: ${errorData.detail || 'Please try again.'}`);
                         }
                       } catch (error: any) {
+                        console.error('Failed to complete ride:', error);
                         alert(`Failed to complete ride: ${error.message}`);
                       } finally {
                         setLoading(false);
@@ -502,7 +444,6 @@ export default function Driver() {
                   setIsRegistered(false);
                   setIsAvailable(false);
                   setStatus(null);
-                  setPendingRide(null);
                 }}
                 className="w-full bg-gray-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-gray-700 transition-colors"
               >
@@ -537,3 +478,4 @@ export default function Driver() {
     </div>
   );
 }
+
