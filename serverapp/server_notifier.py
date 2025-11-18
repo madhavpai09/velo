@@ -5,7 +5,7 @@ import asyncio
 import sys
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -27,7 +27,8 @@ async def cleanup_stale_matches():
             
             db = SessionLocal()
             try:
-                cutoff_time = datetime.utcnow() - timedelta(minutes=STALE_MATCH_THRESHOLD_MINUTES)
+                # Use timezone-aware UTC now and compare against stored timestamps (normalize below)
+                cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=STALE_MATCH_THRESHOLD_MINUTES)
                 
                 # Find old matches that haven't been processed
                 stale_matches = db.query(MatchedRide).filter(
@@ -93,8 +94,22 @@ async def notifier_loop():
                     recent_matches = []
                     stale_count = 0
                     
+                    # Helper to safely compute age against possibly timezone-aware or naive DB timestamps
+                    def _to_utc(dt):
+                        if dt is None:
+                            return None
+                        if dt.tzinfo is None:
+                            return dt.replace(tzinfo=timezone.utc)
+                        return dt.astimezone(timezone.utc)
+
+                    now = datetime.now(timezone.utc)
                     for match in unnotified_matches:
-                        age_minutes = (datetime.utcnow() - match.created_at).total_seconds() / 60
+                        created = _to_utc(match.created_at)
+                        if created is None:
+                            # If no timestamp, treat as recent
+                            recent_matches.append(match)
+                            continue
+                        age_minutes = (now - created).total_seconds() / 60
                         if age_minutes < STALE_MATCH_THRESHOLD_MINUTES:
                             recent_matches.append(match)
                         else:

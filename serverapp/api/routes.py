@@ -5,8 +5,14 @@ from database.connections import get_db
 from database.models import RideRequest as RideRequestModel, DriverInfo, MatchedRide
 from typing import List
 import datetime
+import random
+import string
 
 router = APIRouter()
+
+def generate_otp(length: int = 4) -> str:
+    """Generate a random OTP"""
+    return ''.join(random.choices(string.digits, k=length))
 
 @router.post("/ping")
 def ping(request: PingRequest):
@@ -222,12 +228,14 @@ def get_user_ride_status(user_id: int, db: Session = Depends(get_db)):
                     MatchedRide.user_id == user_id
                 ).first()
                 driver_id = driver_match.driver_id if driver_match else None
+                otp = driver_match.otp if driver_match else None
                 
                 return {
                     "has_ride": True,
                     "ride_id": ride.id,
                     "status": ride.status,
                     "driver_id": driver_id,
+                    "otp": otp,
                     "pickup_location": ride.source_location,
                     "dropoff_location": ride.dest_location
                 }
@@ -239,6 +247,12 @@ def get_user_ride_status(user_id: int, db: Session = Depends(get_db)):
         if not ride:
             return {"has_ride": False}
         
+        # Generate OTP if not already generated
+        if not match.otp:
+            match.otp = generate_otp()
+            db.commit()
+            print(f"🔐 OTP generated for User {user_id} ↔ Driver {match.driver_id}: {match.otp}")
+        
         # Get driver info
         driver = db.query(DriverInfo).filter(DriverInfo.driver_id == match.driver_id).first()
         
@@ -247,6 +261,7 @@ def get_user_ride_status(user_id: int, db: Session = Depends(get_db)):
             "ride_id": ride.id,
             "status": "matched",
             "driver_id": match.driver_id,
+            "otp": match.otp,
             "driver_location": driver.current_location if driver else None,
             "pickup_location": ride.source_location,
             "dropoff_location": ride.dest_location,

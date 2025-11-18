@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import MapView from '../shared/MapView';
@@ -6,7 +5,6 @@ import RideForm from '../shared/RideForm';
 import { 
   createRideRequest, 
   getAvailableDrivers,
-  getRideStatus,
   DriverForMap 
 } from '../utils/api';
 
@@ -17,6 +15,7 @@ interface AssignedDriver {
   driver_location: string;
   pickup_location: string;
   dropoff_location: string;
+  status?: string;
 }
 
 export default function Home() {
@@ -27,18 +26,14 @@ export default function Home() {
   const [rideId, setRideId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectionMode, setSelectionMode] = useState<'pickup' | 'dropoff'>('pickup');
-  
-  // NEW: Track assigned driver
   const [assignedDriver, setAssignedDriver] = useState<AssignedDriver | null>(null);
   const [waitingForDriver, setWaitingForDriver] = useState(false);
   const [isUserOnline, setIsUserOnline] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
   const [showUserIdInput, setShowUserIdInput] = useState(true);
 
-  // Bangalore, India coordinates
   const mapCenter: [number, number] = [12.9716, 77.5946];
 
-  // Mark user as online when component mounts
   useEffect(() => {
     setIsUserOnline(true);
     return () => {
@@ -46,26 +41,22 @@ export default function Home() {
     };
   }, []);
 
-  // Fetch drivers periodically
   useEffect(() => {
     fetchDrivers();
     const interval = setInterval(fetchDrivers, 5000);
     return () => clearInterval(interval);
   }, []);
 
-  // Poll for ride status when waiting for driver or when user is online
   useEffect(() => {
     if (!userId || !isUserOnline) return;
 
     const pollInterval = setInterval(async () => {
       try {
-        // Poll for ride status using user ID
         const response = await fetch(`http://localhost:8000/api/user/${userId}/ride-status`);
         if (response.ok) {
           const data = await response.json();
           
           if (data.has_ride) {
-            // Ride has been assigned
             setWaitingForDriver(false);
             
             if (data.status === 'matched' || data.status === 'accepted' || data.status === 'in_progress') {
@@ -76,9 +67,9 @@ export default function Home() {
                 driver_location: data.driver_location || 'Unknown',
                 pickup_location: data.pickup_location,
                 dropoff_location: data.dropoff_location,
+                status: data.status
               });
               
-              // Update rideId if we got a new ride
               if (data.ride_id) {
                 setRideId(data.ride_id);
               }
@@ -88,7 +79,7 @@ export default function Home() {
       } catch (error) {
         console.error('Failed to poll ride status:', error);
       }
-    }, 2000); // Poll every 2 seconds
+    }, 2000);
 
     return () => clearInterval(pollInterval);
   }, [userId, isUserOnline]);
@@ -143,7 +134,6 @@ export default function Home() {
 
   return (
     <div className="h-screen flex flex-col">
-      {/* Header */}
       <header className="bg-gradient-to-r from-blue-600 to-blue-800 text-white shadow-lg">
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
@@ -155,7 +145,6 @@ export default function Home() {
               </div>
             </div>
             <div className="flex items-center gap-3">
-              {/* User Online Status */}
               {isUserOnline && userId && (
                 <div className="flex items-center gap-2 bg-white/20 px-4 py-2 rounded-lg">
                   <div className="w-3 h-3 rounded-full bg-green-400 animate-pulse"></div>
@@ -171,7 +160,6 @@ export default function Home() {
               <button
                 onClick={() => navigate('/')}
                 className="bg-white/20 text-white px-4 py-2 rounded-lg font-semibold hover:bg-white/30 transition-colors"
-                title="Go back to landing page to switch between User and Driver"
               >
                 Switch Role
               </button>
@@ -180,11 +168,8 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar - Ride Form */}
         <div className="w-96">
-          {/* User ID Input */}
           {showUserIdInput && (
             <div className="bg-white border-b p-4 shadow-sm">
               <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -253,9 +238,7 @@ export default function Home() {
           />
         </div>
 
-        {/* Map */}
         <div className="flex-1 relative">
-          {/* Selection Mode Indicator */}
           {!assignedDriver && (
             <div className="absolute top-4 left-4 z-[1000] bg-white rounded-lg shadow-lg p-3">
               <div className="text-xs text-gray-600 mb-1">Click mode:</div>
@@ -267,7 +250,6 @@ export default function Home() {
             </div>
           )}
 
-          {/* Assigned Driver Popup */}
           {assignedDriver && (
             <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-[1000] bg-white rounded-lg shadow-2xl p-6 min-w-[400px] animate-bounce">
               <div className="text-center">
@@ -280,6 +262,11 @@ export default function Home() {
                   <div className="text-sm text-gray-600">
                     Driver ID: {assignedDriver.driver_id}
                   </div>
+                  {assignedDriver.status && (
+                    <div className="text-xs text-gray-500 mt-2">
+                      Status: {assignedDriver.status}
+                    </div>
+                  )}
                 </div>
                 <button
                   onClick={handleNewRide}
@@ -304,4 +291,3 @@ export default function Home() {
     </div>
   );
 }
-

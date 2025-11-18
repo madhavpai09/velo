@@ -12,9 +12,65 @@ from models.schemas import RideCreate, DriverCreate, UpdateMatchPayload
 from api.routes import router as api_router
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 Base.metadata.create_all(bind=engine)
-app = FastAPI(title="Orchestrator Server")
+
+# Startup event to clean up stale data
+def cleanup_on_startup():
+    """Clean up stale matches and reset ride/driver states on server startup"""
+    db = SessionLocal()
+    try:
+        print("\n🧹 Performing startup cleanup...")
+        
+        # Clear all pending matches to avoid re-processing old matches
+        old_matches = db.query(MatchedRide).filter(
+            MatchedRide.status.in_(["pending_notification", "accepted"])
+        ).all()
+        
+        if old_matches:
+            print(f"   🗑️  Removing {len(old_matches)} old match(es) from previous session...")
+            
+            # Reset drivers marked as unavailable back to available
+            for match in old_matches:
+                driver = db.query(DriverInfo).filter(
+                    DriverInfo.driver_id == match.driver_id
+                ).first()
+                if driver and not driver.available:
+                    driver.available = True
+                    print(f"      ✅ Driver {match.driver_id} marked available again")
+                
+                db.delete(match)
+        
+        # Reset all rides that are stuck in "matched" or "broadcasting" status
+        stuck_rides = db.query(RideRequest).filter(
+            RideRequest.status.in_(["matched", "broadcasting"])
+        ).all()
+        
+        if stuck_rides:
+            print(f"   🗑️  Resetting {len(stuck_rides)} ride(s) stuck in matched/broadcasting...")
+            for ride in stuck_rides:
+                ride.status = "pending"
+                print(f"      ✅ Ride {ride.id} reset to pending")
+        
+        db.commit()
+        print("   ✅ Cleanup complete\n")
+        
+    except Exception as e:
+        print(f"   ⚠️  Cleanup error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    cleanup_on_startup()
+    yield
+    # Shutdown
+    pass
+
+app = FastAPI(title="Orchestrator Server", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

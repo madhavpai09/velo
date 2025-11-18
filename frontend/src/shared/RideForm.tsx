@@ -14,8 +14,6 @@ interface RideFormProps {
   waitingForDriver: boolean;
   assignedDriver: any;
   onNewRide: () => void;
-  rideOTP?: string | null;
-  showOTP?: boolean;
 }
 
 export default function RideForm({
@@ -31,39 +29,16 @@ export default function RideForm({
   onSelectionModeChange,
   waitingForDriver,
   assignedDriver,
-  onNewRide,
-  rideOTP,
-  showOTP
+  onNewRide
 }: RideFormProps) {
   return (
     <div className="bg-white shadow-lg p-6 overflow-y-auto">
-      {/* Assigned Driver with OTP Display */}
       {assignedDriver ? (
         <div className="space-y-4">
-          <div className={`rounded-lg p-4 border-2 ${
-            showOTP ? 'bg-green-50 border-green-400' : 'bg-blue-50 border-blue-400'
-          }`}>
+          <div className="bg-green-50 rounded-lg p-4 border-2 border-green-400">
             <h3 className="font-semibold text-gray-700 mb-3 text-center">
-              {showOTP ? '🔐 Ride OTP Generated!' : '✅ Driver Assigned!'}
+              ✅ Driver Assigned!
             </h3>
-            
-            {/* OTP Display */}
-            {showOTP && rideOTP && (
-              <div className="bg-gradient-to-br from-green-500 to-green-700 rounded-lg p-6 mb-4 text-center">
-                <div className="text-white mb-2">
-                  <div className="text-sm font-semibold mb-1">Share this OTP with driver</div>
-                  <div className="text-xs opacity-90 mb-3">Driver needs this to start the ride</div>
-                </div>
-                <div className="bg-white rounded-lg p-4 mb-3">
-                  <div className="text-6xl font-bold text-green-600 tracking-widest">
-                    {rideOTP}
-                  </div>
-                </div>
-                <div className="text-white text-xs opacity-90">
-                  ⚠️ Do not share with anyone else
-                </div>
-              </div>
-            )}
             
             <div className="text-center mb-4">
               <div className="text-4xl mb-2">🚗</div>
@@ -74,9 +49,13 @@ export default function RideForm({
                 <div className={`inline-block px-3 py-1 rounded-full text-xs font-semibold mt-2 ${
                   assignedDriver.status === 'in_progress' 
                     ? 'bg-green-100 text-green-800' 
+                    : assignedDriver.status === 'accepted'
+                    ? 'bg-blue-100 text-blue-800'
                     : 'bg-yellow-100 text-yellow-800'
                 }`}>
-                  {assignedDriver.status === 'in_progress' ? '🚦 Ride Started' : '⏳ Waiting for OTP'}
+                  {assignedDriver.status === 'in_progress' ? '🚦 Ride In Progress' : 
+                   assignedDriver.status === 'accepted' ? '✅ Driver Accepted' :
+                   '⏳ Driver Assigned'}
                 </div>
               )}
             </div>
@@ -109,7 +88,6 @@ export default function RideForm({
           </div>
         </div>
       ) : waitingForDriver ? (
-        /* Waiting for Driver */
         <div className="space-y-4">
           <div className="bg-blue-50 rounded-lg p-6 border-2 border-blue-400">
             <div className="text-center">
@@ -133,14 +111,12 @@ export default function RideForm({
           </div>
         </div>
       ) : (
-        /* Request Ride Form */
         <div className="space-y-6">
           <div>
             <h2 className="text-2xl font-bold text-gray-800 mb-2">Request a Ride</h2>
             <p className="text-sm text-gray-600">Click on map to set locations</p>
           </div>
 
-          {/* Location Selection Toggles */}
           <div className="flex gap-2">
             <button
               onClick={() => onSelectionModeChange('pickup')}
@@ -164,7 +140,6 @@ export default function RideForm({
             </button>
           </div>
 
-          {/* Selected Locations */}
           <div className="space-y-3">
             <div className={`p-4 rounded-lg border-2 ${
               pickupLocation ? 'bg-green-50 border-green-300' : 'bg-gray-50 border-gray-200'
@@ -199,7 +174,6 @@ export default function RideForm({
             </div>
           </div>
 
-          {/* Available Drivers Info */}
           <div className="bg-blue-50 rounded-lg p-4">
             <div className="flex items-center justify-between">
               <span className="text-sm font-semibold text-gray-700">Available Drivers</span>
@@ -207,7 +181,6 @@ export default function RideForm({
             </div>
           </div>
 
-          {/* Request Ride Button */}
           <button
             onClick={onRequestRide}
             disabled={!pickupLocation || !dropoffLocation || loading}
