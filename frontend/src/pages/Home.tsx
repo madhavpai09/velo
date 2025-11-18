@@ -1,3 +1,4 @@
+
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import MapView from '../shared/MapView';
@@ -16,7 +17,6 @@ interface AssignedDriver {
   driver_location: string;
   pickup_location: string;
   dropoff_location: string;
-  status?: string;
 }
 
 export default function Home() {
@@ -28,18 +28,17 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [selectionMode, setSelectionMode] = useState<'pickup' | 'dropoff'>('pickup');
   
+  // NEW: Track assigned driver
   const [assignedDriver, setAssignedDriver] = useState<AssignedDriver | null>(null);
   const [waitingForDriver, setWaitingForDriver] = useState(false);
   const [isUserOnline, setIsUserOnline] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
   const [showUserIdInput, setShowUserIdInput] = useState(true);
-  
-  // NEW: OTP related states
-  const [rideOTP, setRideOTP] = useState<string | null>(null);
-  const [showOTP, setShowOTP] = useState(false);
 
+  // Bangalore, India coordinates
   const mapCenter: [number, number] = [12.9716, 77.5946];
 
+  // Mark user as online when component mounts
   useEffect(() => {
     setIsUserOnline(true);
     return () => {
@@ -47,86 +46,52 @@ export default function Home() {
     };
   }, []);
 
+  // Fetch drivers periodically
   useEffect(() => {
     fetchDrivers();
     const interval = setInterval(fetchDrivers, 5000);
     return () => clearInterval(interval);
   }, []);
 
-  // Poll for ride status (only runs when userId is set)
+  // Poll for ride status when waiting for driver or when user is online
   useEffect(() => {
     if (!userId || !isUserOnline) return;
 
     const pollInterval = setInterval(async () => {
       try {
+        // Poll for ride status using user ID
         const response = await fetch(`http://localhost:8000/api/user/${userId}/ride-status`);
         if (response.ok) {
           const data = await response.json();
-          // console.log("user ride-status poll:", data);
-
+          
           if (data.has_ride) {
+            // Ride has been assigned
             setWaitingForDriver(false);
             
-            if (data.status === 'matched' || data.status === 'accepted') {
-              const driverInfo = {
+            if (data.status === 'matched' || data.status === 'accepted' || data.status === 'in_progress') {
+              setAssignedDriver({
                 ride_id: data.ride_id,
                 driver_id: data.driver_id,
                 driver_name: `Driver ${data.driver_id}`,
                 driver_location: data.driver_location || 'Unknown',
                 pickup_location: data.pickup_location,
                 dropoff_location: data.dropoff_location,
-                status: data.status,
-              };
+              });
               
-              setAssignedDriver(driverInfo);
-
+              // Update rideId if we got a new ride
               if (data.ride_id) {
                 setRideId(data.ride_id);
-
-                // Generate OTP when driver is accepted (status = accepted)
-                if (data.status === 'accepted' && !rideOTP) {
-                  console.log(`Driver accepted ride ${data.ride_id} — generating OTP...`);
-                  generateOTP(data.ride_id);
-                }
               }
-            } else if (data.status === 'in_progress') {
-              // Ride has started - hide OTP
-              setShowOTP(false);
-              setRideOTP(null);
             }
-          } else {
-            // no ride
-            // keep waitingForDriver state as is, don't clear assignedDriver immediately
           }
-        } else {
-          console.warn('ride-status poll returned non-ok', response.status);
         }
       } catch (error) {
         console.error('Failed to poll ride status:', error);
       }
-    }, 2000);
+    }, 2000); // Poll every 2 seconds
 
     return () => clearInterval(pollInterval);
-  }, [userId, isUserOnline, rideOTP]);
-
-  const generateOTP = async (rideId: number) => {
-    try {
-      const response = await fetch(`http://localhost:8000/api/ride/${rideId}/generate-otp`, {
-        method: 'POST',
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setRideOTP(data.otp);
-        setShowOTP(true);
-        console.log('✅ OTP Generated:', data.otp);
-      } else {
-        console.warn('Failed to generate OTP - server returned non-ok:', response.status);
-      }
-    } catch (error) {
-      console.error('Failed to generate OTP:', error);
-    }
-  };
+  }, [userId, isUserOnline]);
 
   const fetchDrivers = async () => {
     const driverData = await getAvailableDrivers();
@@ -150,21 +115,15 @@ export default function Home() {
 
     setLoading(true);
     try {
-      // Use explicit usedUserId and ensure we store it in state so polling starts
-      const usedUserId = userId || 7000;
-      // Ensure UI reflects that userId is set (so polling starts)
-      setUserId(usedUserId);
-      setShowUserIdInput(false);
-      
       const response = await createRideRequest(
         pickupLocation,
         dropoffLocation,
-        usedUserId
+        userId || 7000
       );
 
       setRideId(response.data.id);
       setWaitingForDriver(true);
-      console.log('✅ Ride created:', response.data, 'for user:', usedUserId);
+      console.log('✅ Ride created:', response.data);
     } catch (error: any) {
       console.error('❌ Failed to create ride:', error);
       alert(`Failed to create ride: ${error.message}`);
@@ -180,8 +139,6 @@ export default function Home() {
     setPickupLocation(null);
     setDropoffLocation(null);
     setSelectionMode('pickup');
-    setRideOTP(null);
-    setShowOTP(false);
   };
 
   return (
@@ -198,6 +155,7 @@ export default function Home() {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              {/* User Online Status */}
               {isUserOnline && userId && (
                 <div className="flex items-center gap-2 bg-white/20 px-4 py-2 rounded-lg">
                   <div className="w-3 h-3 rounded-full bg-green-400 animate-pulse"></div>
@@ -213,6 +171,7 @@ export default function Home() {
               <button
                 onClick={() => navigate('/')}
                 className="bg-white/20 text-white px-4 py-2 rounded-lg font-semibold hover:bg-white/30 transition-colors"
+                title="Go back to landing page to switch between User and Driver"
               >
                 Switch Role
               </button>
@@ -225,6 +184,7 @@ export default function Home() {
       <div className="flex-1 flex overflow-hidden">
         {/* Sidebar - Ride Form */}
         <div className="w-96">
+          {/* User ID Input */}
           {showUserIdInput && (
             <div className="bg-white border-b p-4 shadow-sm">
               <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -244,7 +204,7 @@ export default function Home() {
                       setShowUserIdInput(false);
                       setIsUserOnline(true);
                     } else {
-                      alert('Please enter a valid User ID or leave blank to use default 7000 (it will be auto-set when you request).');
+                      alert('Please enter a valid User ID');
                     }
                   }}
                   className="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
@@ -253,7 +213,7 @@ export default function Home() {
                 </button>
               </div>
               <p className="text-xs text-gray-500 mt-2">
-                Each user needs a unique ID (e.g., 6000, 7000, 8000). Leave blank to use default 7000 (will be auto-set on request).
+                Each user needs a unique ID (e.g., 6000, 7000, 8000)
               </p>
             </div>
           )}
@@ -290,13 +250,12 @@ export default function Home() {
             waitingForDriver={waitingForDriver}
             assignedDriver={assignedDriver}
             onNewRide={handleNewRide}
-            rideOTP={rideOTP}
-            showOTP={showOTP}
           />
         </div>
 
         {/* Map */}
         <div className="flex-1 relative">
+          {/* Selection Mode Indicator */}
           {!assignedDriver && (
             <div className="absolute top-4 left-4 z-[1000] bg-white rounded-lg shadow-lg p-3">
               <div className="text-xs text-gray-600 mb-1">Click mode:</div>
@@ -308,26 +267,9 @@ export default function Home() {
             </div>
           )}
 
-          {/* OTP Display Popup */}
-          {showOTP && rideOTP && assignedDriver && (
-            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-[1000] bg-gradient-to-br from-green-400 to-green-600 rounded-lg shadow-2xl p-6 min-w-[350px] animate-pulse">
-              <div className="text-center text-white">
-                <div className="text-4xl mb-2">🔐</div>
-                <div className="text-lg font-bold mb-1">Share OTP with Driver</div>
-                <div className="text-sm mb-4 opacity-90">To start your ride</div>
-                <div className="bg-white text-green-600 rounded-lg p-4 mb-3">
-                  <div className="text-5xl font-bold tracking-widest">{rideOTP}</div>
-                </div>
-                <div className="text-xs opacity-90">
-                  Don't share this OTP with anyone except your driver
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* Assigned Driver Popup */}
-          {assignedDriver && !showOTP && (
-            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-[1000] bg-white rounded-lg shadow-2xl p-6 min-w-[400px]">
+          {assignedDriver && (
+            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-[1000] bg-white rounded-lg shadow-2xl p-6 min-w-[400px] animate-bounce">
               <div className="text-center">
                 <div className="text-6xl mb-3">🎉</div>
                 <div className="text-2xl font-bold text-green-600 mb-2">Driver Assigned!</div>
@@ -362,3 +304,4 @@ export default function Home() {
     </div>
   );
 }
+

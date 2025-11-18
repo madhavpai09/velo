@@ -19,16 +19,11 @@ export default function Driver() {
   const [currentRide, setCurrentRide] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<DriverStatus | null>(null);
-  
-  // OTP verification states
-  const [enteredOTP, setEnteredOTP] = useState<string>('');
-  const [showOTPInput, setShowOTPInput] = useState(false);
-  const [otpError, setOtpError] = useState<string>('');
-  
   const isAvailableRef = useRef(isAvailable);
   const driverIdRef = useRef(driverId);
   const isRegisteredRef = useRef(isRegistered);
   
+  // Keep refs in sync
   useEffect(() => {
     isAvailableRef.current = isAvailable;
   }, [isAvailable]);
@@ -41,9 +36,10 @@ export default function Driver() {
     isRegisteredRef.current = isRegistered;
   }, [isRegistered]);
 
+  // Bangalore, India coordinates
   const mapCenter: [number, number] = [12.9716, 77.5946];
 
-  // Poll for driver status
+  // Poll for driver status when registered (read-only, don't change availability)
   useEffect(() => {
     if (!isRegistered || !driverId) return;
 
@@ -54,6 +50,8 @@ export default function Driver() {
           const driverStatus = await getDriverStatus(numericId);
           if (driverStatus) {
             setStatus(driverStatus);
+            // Don't automatically update isAvailable - only user can toggle it
+            // Only sync if status is null (initial load)
             if (status === null) {
               setIsAvailable(driverStatus.available || false);
             }
@@ -62,14 +60,14 @@ export default function Driver() {
       } catch (error) {
         console.error('Failed to poll driver status:', error);
       }
-    }, 3000);
+    }, 3000); // Poll every 3 seconds (read-only)
 
     return () => clearInterval(pollInterval);
   }, [isRegistered, driverId, status]);
 
-  // Poll for ride broadcasts (rides are broadcast to ALL drivers)
+  // Poll for ride assignments when driver is online and available
   useEffect(() => {
-    if (!isRegistered || !driverId || !isAvailable || currentRide) return;
+    if (!isRegistered || !driverId || !isAvailable) return;
 
     const pollRideInterval = setInterval(async () => {
       try {
@@ -78,29 +76,27 @@ export default function Driver() {
           const response = await fetch(`http://localhost:8000/api/driver/${numericId}/pending-ride`);
           if (response.ok) {
             const data = await response.json();
-            if (data.has_ride) {
-              console.log('📢 New ride broadcast received!', data);
-              // store match_id (backend sends "match_id")
-              setCurrentRide({ ...data, match_id: data.match_id, status: 'broadcast' });
-              
-              // Show notification - driver must manually accept
-              alert(`📢 New Ride Available!\nRide ID: ${data.ride_id}\nPickup: ${data.pickup_location}\nDropoff: ${data.dropoff_location}\n\n⚠️ First driver to accept gets the ride!`);
+            if (data.has_ride && !currentRide) {
+              console.log('🎉 New ride assigned!', data);
+              setCurrentRide(data);
+              setIsAvailable(false); // Driver is now on a ride
+              // Auto-accept the ride
+              await fetch(`http://localhost:8000/api/driver/${numericId}/accept-ride/${data.match_id}`, {
+                method: 'POST'
+              });
+              alert(`🚨 New Ride Assigned!\nRide ID: ${data.ride_id}\nUser ID: ${data.user_id}\nPickup: ${data.pickup_location}\nDropoff: ${data.dropoff_location}`);
             }
-          } else {
-            // not-ok response (403/404 etc)
-            const text = await response.text().catch(() => '');
-            console.warn('pending-ride returned non-ok:', response.status, text);
           }
         }
       } catch (error) {
-        console.error('Failed to poll for ride broadcasts:', error);
+        console.error('Failed to poll for ride assignments:', error);
       }
-    }, 2000);
+    }, 2000); // Poll every 2 seconds for ride assignments
 
     return () => clearInterval(pollRideInterval);
   }, [isRegistered, driverId, isAvailable, currentRide]);
 
-  // Poll for current active ride
+  // Poll for current active ride when driver is on a ride
   useEffect(() => {
     if (!isRegistered || !driverId || isAvailable) return;
 
@@ -112,64 +108,72 @@ export default function Driver() {
           if (response.ok) {
             const data = await response.json();
             if (data.has_ride) {
+              // Update current ride info
               if (!currentRide || currentRide.ride_id !== data.ride_id) {
                 setCurrentRide(data);
               }
-              // If ride is accepted, show OTP input
-              if (data.status === 'accepted' && !showOTPInput) {
-                setShowOTPInput(true);
-              }
-              // If ride is in_progress, hide OTP input
-              if (data.status === 'in_progress') {
-                setShowOTPInput(false);
-              }
             } else {
-              if (currentRide && currentRide.status !== 'broadcast') {
+              // No active ride - driver should be available
+              if (currentRide) {
                 setCurrentRide(null);
                 setIsAvailable(true);
-                setShowOTPInput(false);
-                setEnteredOTP('');
-                setOtpError('');
               }
             }
-          } else {
-            console.warn('current-ride returned non-ok', response.status);
           }
         }
       } catch (error) {
         console.error('Failed to poll for current ride:', error);
       }
-    }, 2000);
+    }, 2000); // Poll every 2 seconds
 
     return () => clearInterval(pollCurrentRideInterval);
-  }, [isRegistered, driverId, isAvailable, currentRide, showOTPInput]);
+  }, [isRegistered, driverId, isAvailable, currentRide]);
 
-  // Cleanup on unmount
+  // Mark driver as offline when component unmounts (user closes page) or page unloads
   useEffect(() => {
     const handleBeforeUnload = () => {
+      // Mark driver as offline when page is closing
       if (isRegisteredRef.current && driverIdRef.current && isAvailableRef.current) {
         const fullDriverId = driverIdRef.current.startsWith('DRIVER-') 
           ? driverIdRef.current 
           : `DRIVER-${driverIdRef.current}`;
         
+        // Use fetch with keepalive for reliable cleanup on page close
+        // keepalive ensures the request completes even if page is closing
         fetch(`http://localhost:8000/driver/set-availability?driver_id=${encodeURIComponent(fullDriverId)}&is_available=false`, {
           method: 'POST',
           keepalive: true,
-        }).catch(() => {});
+        }).catch(() => {
+          // Silently fail - page is closing anyway
+        });
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      // Mark driver as offline when tab becomes hidden (optional)
+      if (document.hidden && isRegisteredRef.current && driverIdRef.current && isAvailableRef.current) {
+        // You can choose to mark offline when tab is hidden, or only on page close
+        // For now, we'll only mark offline on page close
       }
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
+      // Cleanup: mark driver as offline when component unmounts
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       
       if (isRegistered && driverId && isAvailable) {
         const fullDriverId = driverId.startsWith('DRIVER-') ? driverId : `DRIVER-${driverId}`;
+        // Try to set availability to false (may not complete if page is closing)
         fetch(`http://localhost:8000/driver/set-availability?driver_id=${encodeURIComponent(fullDriverId)}&is_available=false`, {
           method: 'POST',
-          keepalive: true,
-        }).catch(() => {});
+          keepalive: true, // Keep request alive even if page is closing
+        }).catch(() => {
+          // Silently fail - page is closing anyway
+        });
       }
     };
   }, [isRegistered, driverId, isAvailable]);
@@ -207,13 +211,17 @@ export default function Driver() {
       const newAvailability = !isAvailable;
       const fullDriverId = driverId.startsWith('DRIVER-') ? driverId : `DRIVER-${driverId}`;
       
+      // Update backend first
       await setDriverAvailability(fullDriverId, newAvailability);
+      
+      // Only update local state if backend update succeeds
       setIsAvailable(newAvailability);
       
       console.log(`✅ Driver ${newAvailability ? 'online' : 'offline'}`);
     } catch (error: any) {
       console.error('❌ Failed to update availability:', error);
       alert(`Failed to update availability: ${error.message}`);
+      // Don't update local state if backend update failed
     } finally {
       setLoading(false);
     }
@@ -226,123 +234,6 @@ export default function Driver() {
         driverId.startsWith('DRIVER-') ? driverId : `DRIVER-${driverId}`,
         { lat, lng }
       ).catch(err => console.error('Failed to update location:', err));
-    }
-  };
-
-  // Accept broadcast — now uses match_id returned by backend
-  const handleAcceptBroadcast = async () => {
-    if (!currentRide || (!currentRide.match_id && !currentRide.matchId)) {
-      alert('No valid broadcast to accept');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const numericId = parseInt(driverId.replace('DRIVER-', '')) || parseInt(driverId);
-      const matchId = currentRide.match_id || currentRide.matchId;
-      const response = await fetch(
-        `http://localhost:8000/api/driver/${numericId}/accept-ride/${matchId}`,
-        { method: 'POST' }
-      );
-      
-      if (response.ok) {
-        const data = await response.json();
-        alert(`✅ Ride ${data.ride_id || currentRide.ride_id} accepted! Waiting for user OTP...`);
-        setIsAvailable(false);
-        setCurrentRide({ ...currentRide, status: 'accepted' });
-        setShowOTPInput(true);
-      } else {
-        const errBody = await response.json().catch(() => ({}));
-        alert(`❌ ${errBody.detail || 'Another driver may have already accepted this ride'}`);
-        setCurrentRide(null);
-      }
-    } catch (error: any) {
-      console.error('Failed to accept broadcast:', error);
-      alert('Failed to accept ride. It may have been taken by another driver.');
-      setCurrentRide(null);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleDeclineBroadcast = () => {
-    setCurrentRide(null);
-    alert('Ride declined. You remain available for new rides.');
-  };
-
-  const handleVerifyOTP = async () => {
-    if (!currentRide || !enteredOTP || enteredOTP.length !== 4) {
-      setOtpError('Please enter a valid 4-digit OTP');
-      return;
-    }
-
-    setLoading(true);
-    setOtpError('');
-    
-    try {
-      const response = await fetch(
-        `http://localhost:8000/api/ride/${currentRide.ride_id}/verify-otp?otp=${enteredOTP}`,
-        { method: 'POST' }
-      );
-      
-      if (response.ok) {
-        const data = await response.json();
-        if (data.verified) {
-          // OTP verified - start the ride
-          const numericId = parseInt(driverId.replace('DRIVER-', '')) || parseInt(driverId);
-          const startResponse = await fetch(
-            `http://localhost:8000/api/driver/${numericId}/start-ride/${currentRide.ride_id}`,
-            { method: 'POST' }
-          );
-          
-          if (startResponse.ok) {
-            alert('✅ OTP Verified! Ride Started!');
-            setShowOTPInput(false);
-            setEnteredOTP('');
-            setOtpError('');
-            setCurrentRide({ ...currentRide, status: 'in_progress' });
-          } else {
-            setOtpError('Failed to start ride. Please try again.');
-          }
-        } else {
-          setOtpError('❌ Invalid OTP. Please check with the user.');
-        }
-      } else {
-        setOtpError('Failed to verify OTP. Server error.');
-      }
-    } catch (error: any) {
-      console.error('Failed to verify OTP:', error);
-      setOtpError('Failed to verify OTP. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleCompleteRide = async () => {
-    if (!currentRide || !currentRide.ride_id) return;
-    setLoading(true);
-    try {
-      const numericId = parseInt(driverId.replace('DRIVER-', '')) || parseInt(driverId);
-      const response = await fetch(
-        `http://localhost:8000/api/driver/${numericId}/complete-ride/${currentRide.ride_id}`,
-        { method: 'POST' }
-      );
-      if (response.ok) {
-        alert(`✅ Ride ${currentRide.ride_id} completed!\nYou are now available for new rides.`);
-        setCurrentRide(null);
-        setIsAvailable(true);
-        await setDriverAvailability(
-          driverId.startsWith('DRIVER-') ? driverId : `DRIVER-${driverId}`,
-          true
-        );
-      } else {
-        const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
-        alert(`Failed to complete ride: ${errorData.detail || 'Please try again.'}`);
-      }
-    } catch (error: any) {
-      alert(`Failed to complete ride: ${error.message}`);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -360,6 +251,7 @@ export default function Driver() {
               </div>
             </div>
             <div className="flex items-center gap-4">
+              {/* Online Status Indicator */}
               {isRegistered && (
                 <div className="flex items-center gap-2 bg-white/20 px-4 py-2 rounded-lg">
                   <div className={`w-3 h-3 rounded-full ${
@@ -385,7 +277,7 @@ export default function Driver() {
 
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar */}
+        {/* Sidebar - Driver Controls */}
         <div className="w-96 bg-white shadow-lg p-6 overflow-y-auto">
           {!isRegistered ? (
             <div className="space-y-6">
@@ -479,23 +371,25 @@ export default function Driver() {
                 </p>
               </div>
 
-              {/* Ride Broadcast / Current Ride */}
+              {/* Status Info */}
+              {status && (
+                <div className="bg-blue-50 rounded-lg p-4">
+                  <h3 className="font-semibold text-gray-700 mb-2">Status</h3>
+                  <div className="text-sm text-gray-600 space-y-1">
+                    <div>Location: {status.current_location || 'Not set'}</div>
+                    <div>Available: {status.available ? 'Yes' : 'No'}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Current Ride */}
               {currentRide && (
-                <div className={`rounded-lg p-4 border-2 ${
-                  currentRide.status === 'broadcast' ? 'bg-blue-50 border-blue-400' :
-                  showOTPInput ? 'bg-yellow-50 border-yellow-400' : 'bg-green-50 border-green-400'
-                }`}>
-                  <h3 className="font-semibold text-gray-700 mb-3">
-                    {currentRide.status === 'broadcast' ? '📢 New Ride Available!' :
-                     showOTPInput ? '🔐 Enter OTP to Start' : '🚨 Active Ride'}
-                  </h3>
-                  
+                <div className="bg-yellow-50 rounded-lg p-4 border-2 border-yellow-400">
+                  <h3 className="font-semibold text-gray-700 mb-3">🚨 Active Ride</h3>
                   <div className="text-sm text-gray-600 space-y-2 mb-4">
                     <div><span className="font-semibold">Ride ID:</span> {currentRide.ride_id}</div>
                     <div><span className="font-semibold">User ID:</span> {currentRide.user_id}</div>
-                    {currentRide.status && currentRide.status !== 'broadcast' && (
-                      <div><span className="font-semibold">Status:</span> {currentRide.status}</div>
-                    )}
+                    <div><span className="font-semibold">Status:</span> {currentRide.status || 'accepted'}</div>
                     <div className="pt-2 border-t">
                       <div className="font-semibold mb-1">📍 Pickup:</div>
                       <div className="text-xs">{currentRide.pickup_location}</div>
@@ -505,71 +399,43 @@ export default function Driver() {
                       <div className="text-xs">{currentRide.dropoff_location}</div>
                     </div>
                   </div>
-
-                  {/* Accept/Decline Broadcast Buttons */}
-                  {currentRide.status === 'broadcast' && (
-                    <div className="space-y-2">
-                      <button
-                        onClick={handleAcceptBroadcast}
-                        disabled={loading}
-                        className="w-full bg-green-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-                      >
-                        {loading ? 'Accepting...' : '✅ Accept Ride'}
-                      </button>
-                      <button
-                        onClick={handleDeclineBroadcast}
-                        disabled={loading}
-                        className="w-full bg-gray-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-gray-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-                      >
-                        ❌ Decline
-                      </button>
-                      <p className="text-xs text-center text-gray-600 mt-2">
-                        ⚠️ First driver to accept gets the ride!
-                      </p>
-                    </div>
-                  )}
-
-                  {/* OTP Input Section */}
-                  {showOTPInput && currentRide.status !== 'broadcast' && (
-                    <div className="bg-white rounded-lg p-4 mb-4">
-                      <label className="block text-sm font-semibold text-gray-700 mb-2">
-                        Enter OTP from User
-                      </label>
-                      <input
-                        type="text"
-                        maxLength={4}
-                        value={enteredOTP}
-                        onChange={(e) => {
-                          const value = e.target.value.replace(/\D/g, '');
-                          setEnteredOTP(value);
-                          setOtpError('');
-                        }}
-                        placeholder="4-digit OTP"
-                        className="w-full px-4 py-3 text-center text-2xl font-bold tracking-widest border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                      />
-                      {otpError && (
-                        <p className="text-xs text-red-600 mt-2">{otpError}</p>
-                      )}
-                      <button
-                        onClick={handleVerifyOTP}
-                        disabled={loading || enteredOTP.length !== 4}
-                        className="w-full mt-3 bg-green-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-                      >
-                        {loading ? 'Verifying...' : '✅ Verify & Start Ride'}
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Complete Ride Button */}
-                  {!showOTPInput && currentRide.status !== 'broadcast' && (
-                    <button
-                      onClick={handleCompleteRide}
-                      disabled={loading}
-                      className="w-full bg-green-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {loading ? 'Completing...' : '🏁 Complete Ride'}
-                    </button>
-                  )}
+                  <button
+                    onClick={async () => {
+                      if (!currentRide || !currentRide.ride_id) return;
+                      setLoading(true);
+                      try {
+                        const numericId = parseInt(driverId.replace('DRIVER-', '')) || parseInt(driverId);
+                        const response = await fetch(
+                          `http://localhost:8000/api/driver/${numericId}/complete-ride/${currentRide.ride_id}`,
+                          { method: 'POST' }
+                        );
+                        if (response.ok) {
+                          const result = await response.json();
+                          alert(`✅ Ride ${currentRide.ride_id} completed!\nYou are now available for new rides.`);
+                          setCurrentRide(null);
+                          setIsAvailable(true);
+                          // Update availability in backend
+                          await setDriverAvailability(
+                            driverId.startsWith('DRIVER-') ? driverId : `DRIVER-${driverId}`,
+                            true
+                          );
+                        } else {
+                          const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                          console.error('Complete ride error:', errorData);
+                          alert(`Failed to complete ride: ${errorData.detail || 'Please try again.'}`);
+                        }
+                      } catch (error: any) {
+                        console.error('Failed to complete ride:', error);
+                        alert(`Failed to complete ride: ${error.message}`);
+                      } finally {
+                        setLoading(false);
+                      }
+                    }}
+                    disabled={loading}
+                    className="w-full bg-green-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {loading ? 'Completing...' : '✅ Complete Ride'}
+                  </button>
                 </div>
               )}
 
@@ -578,7 +444,6 @@ export default function Driver() {
                   setIsRegistered(false);
                   setIsAvailable(false);
                   setStatus(null);
-                  setCurrentRide(null);
                 }}
                 className="w-full bg-gray-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-gray-700 transition-colors"
               >
@@ -613,3 +478,4 @@ export default function Driver() {
     </div>
   );
 }
+
