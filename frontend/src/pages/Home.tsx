@@ -1,3 +1,4 @@
+// frontend/src/pages/Home.tsx - Updated with OTP display
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import MapView from '../shared/MapView';
@@ -16,6 +17,8 @@ interface AssignedDriver {
   pickup_location: string;
   dropoff_location: string;
   status?: string;
+  otp?: string;  // NEW: OTP from backend
+  otp_verified?: boolean;  // NEW: OTP verification status
 }
 
 export default function Home() {
@@ -31,6 +34,7 @@ export default function Home() {
   const [isUserOnline, setIsUserOnline] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
   const [showUserIdInput, setShowUserIdInput] = useState(true);
+  const [showOtp, setShowOtp] = useState(false);  // NEW: Show OTP to user
 
   const mapCenter: [number, number] = [12.9716, 77.5946];
 
@@ -67,8 +71,20 @@ export default function Home() {
                 driver_location: data.driver_location || 'Unknown',
                 pickup_location: data.pickup_location,
                 dropoff_location: data.dropoff_location,
-                status: data.status
+                status: data.status,
+                otp: data.otp,  // NEW: Get OTP from backend
+                otp_verified: data.otp_verified  // NEW: Check if OTP verified
               });
+              
+              // NEW: Show OTP when driver accepts (status = 'accepted')
+              if (data.status === 'accepted' && data.otp && !data.otp_verified) {
+                setShowOtp(true);
+              }
+              
+              // NEW: Hide OTP when ride starts (status = 'in_progress')
+              if (data.status === 'in_progress' && data.otp_verified) {
+                setShowOtp(false);
+              }
               
               if (data.ride_id) {
                 setRideId(data.ride_id);
@@ -130,6 +146,7 @@ export default function Home() {
     setPickupLocation(null);
     setDropoffLocation(null);
     setSelectionMode('pickup');
+    setShowOtp(false);  // NEW: Reset OTP display
   };
 
   return (
@@ -138,7 +155,7 @@ export default function Home() {
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <span className="text-4xl"><img src="/0796f710-7ecb-4a40-8176-2eba9ee3c5cd.png" alt="VELO" className="w-11 h-11" /></span>
+              <span className="text-4xl">🚗</span>
               <div>
                 <h1 className="text-3xl font-bold">VELOcabs</h1>
                 <p className="text-sm text-blue-200">Your ride, your way</p>
@@ -239,6 +256,31 @@ export default function Home() {
         </div>
 
         <div className="flex-1 relative">
+          {/* NEW: OTP Display Modal */}
+          {showOtp && assignedDriver?.otp && (
+            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-[1001] bg-white rounded-2xl shadow-2xl p-8 min-w-[400px] border-4 border-green-500 animate-pulse">
+              <div className="text-center">
+                <div className="text-6xl mb-4">🔐</div>
+                <div className="text-2xl font-bold text-gray-800 mb-3">Your OTP</div>
+                <div className="text-sm text-gray-600 mb-6">
+                  Share this with your driver to start the ride
+                </div>
+                <div className="bg-gradient-to-r from-green-500 to-blue-500 text-white p-6 rounded-xl mb-6">
+                  <div className="text-6xl font-bold tracking-widest">
+                    {assignedDriver.otp}
+                  </div>
+                </div>
+                <div className="text-xs text-gray-500 mb-4">
+                  Driver {assignedDriver.driver_id} will verify this OTP
+                </div>
+                <div className="flex items-center justify-center gap-2 text-sm text-yellow-600">
+                  <span className="animate-pulse">⏳</span>
+                  Waiting for driver to verify OTP...
+                </div>
+              </div>
+            </div>
+          )}
+
           {!assignedDriver && (
             <div className="absolute top-4 left-4 z-[1000] bg-white rounded-lg shadow-lg p-3">
               <div className="text-xs text-gray-600 mb-1">Click mode:</div>
@@ -250,11 +292,15 @@ export default function Home() {
             </div>
           )}
 
-          {assignedDriver && (
-            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-[1000] bg-white rounded-lg shadow-2xl p-6 min-w-[400px] animate-bounce">
+          {assignedDriver && !showOtp && (
+            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-[1000] bg-white rounded-lg shadow-2xl p-6 min-w-[400px]">
               <div className="text-center">
-                <div className="text-6xl mb-3">🎉</div>
-                <div className="text-2xl font-bold text-green-600 mb-2">Driver Assigned!</div>
+                <div className="text-6xl mb-3">
+                  {assignedDriver.status === 'in_progress' ? '🚗' : '🎉'}
+                </div>
+                <div className="text-2xl font-bold text-green-600 mb-2">
+                  {assignedDriver.status === 'in_progress' ? 'Ride In Progress!' : 'Driver Assigned!'}
+                </div>
                 <div className="bg-blue-50 p-4 rounded-lg mb-4">
                   <div className="text-lg font-semibold text-gray-800 mb-2">
                     🚗 {assignedDriver.driver_name}
@@ -264,7 +310,7 @@ export default function Home() {
                   </div>
                   {assignedDriver.status && (
                     <div className="text-xs text-gray-500 mt-2">
-                      Status: {assignedDriver.status}
+                      Status: {assignedDriver.status === 'in_progress' ? 'In Progress' : 'Accepted'}
                     </div>
                   )}
                 </div>

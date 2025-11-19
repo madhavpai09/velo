@@ -19,6 +19,8 @@ export default function Driver() {
   const [currentRide, setCurrentRide] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<DriverStatus | null>(null);
+  const [otpInput, setOtpInput] = useState<string>('');
+  const [waitingForOtp, setWaitingForOtp] = useState(false);
   const isAvailableRef = useRef(isAvailable);
   const driverIdRef = useRef(driverId);
   const isRegisteredRef = useRef(isRegistered);
@@ -108,14 +110,17 @@ export default function Driver() {
           if (response.ok) {
             const data = await response.json();
             if (data.has_ride) {
-              // Update current ride info
               if (!currentRide || currentRide.ride_id !== data.ride_id) {
                 setCurrentRide(data);
               }
+              if (data.otp_required && !waitingForOtp) {
+                setWaitingForOtp(true);
+              }
             } else {
-              // No active ride - driver should be available
               if (currentRide) {
                 setCurrentRide(null);
+                setWaitingForOtp(false);
+                setOtpInput('');
                 setIsAvailable(true);
               }
             }
@@ -124,10 +129,10 @@ export default function Driver() {
       } catch (error) {
         console.error('Failed to poll for current ride:', error);
       }
-    }, 2000); // Poll every 2 seconds
+    }, 2000);
 
     return () => clearInterval(pollCurrentRideInterval);
-  }, [isRegistered, driverId, isAvailable, currentRide]);
+  }, [isRegistered, driverId, isAvailable, currentRide, waitingForOtp]);
 
   // Mark driver as offline when component unmounts (user closes page) or page unloads
   useEffect(() => {
@@ -222,6 +227,38 @@ export default function Driver() {
       console.error('❌ Failed to update availability:', error);
       alert(`Failed to update availability: ${error.message}`);
       // Don't update local state if backend update failed
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyOtp = async () => {
+    if (!currentRide || !otpInput) {
+      alert('Please enter the OTP');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const numericId = parseInt(driverId.replace('DRIVER-', '')) || parseInt(driverId);
+      const response = await fetch(
+        `http://localhost:8000/api/driver/${numericId}/verify-otp/${currentRide.match_id}?otp=${otpInput}`,
+        { method: 'POST' }
+      );
+      
+      if (response.ok) {
+        const result = await response.json();
+        setWaitingForOtp(false);
+        setOtpInput('');
+        alert('✅ OTP verified! Ride started.');
+        setCurrentRide({ ...currentRide, status: 'in_progress' });
+      } else {
+        const errorData = await response.json().catch(() => ({ detail: 'Invalid OTP' }));
+        alert(`❌ Invalid OTP: ${errorData.detail}`);
+      }
+    } catch (error: any) {
+      console.error('OTP verification failed:', error);
+      alert(`OTP verification failed: ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -378,6 +415,33 @@ export default function Driver() {
                   <div className="text-sm text-gray-600 space-y-1">
                     <div>Location: {status.current_location || 'Not set'}</div>
                     <div>Available: {status.available ? 'Yes' : 'No'}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* OTP Verification */}
+              {currentRide && waitingForOtp && (
+                <div className="bg-red-50 rounded-lg p-4 mb-4 border-2 border-red-400">
+                  <h3 className="font-semibold text-red-800 mb-3">🔐 OTP Verification Required</h3>
+                  <p className="text-sm text-red-700 mb-3">
+                    Ask the user for the OTP from their app and enter it below to start the ride.
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={otpInput}
+                      onChange={(e) => setOtpInput(e.target.value.slice(0, 4))}
+                      placeholder="Enter 4-digit OTP"
+                      maxLength={4}
+                      className="flex-1 px-4 py-2 border-2 border-red-400 rounded-lg text-center text-2xl font-bold focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                    />
+                    <button
+                      onClick={handleVerifyOtp}
+                      disabled={loading || otpInput.length !== 4}
+                      className="bg-red-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {loading ? 'Verifying...' : 'Verify'}
+                    </button>
                   </div>
                 </div>
               )}
