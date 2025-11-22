@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import requests
 import time
 import sys
@@ -11,10 +12,45 @@ from database.models import Base, RideRequest, DriverInfo, MatchedRide
 from models.schemas import RideCreate, DriverCreate, UpdateMatchPayload
 from api.routes import router as api_router
 from pydantic import BaseModel
-from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 Base.metadata.create_all(bind=engine)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    cleanup_on_startup()
+    yield
+    # Shutdown
+    pass
+
+app = FastAPI(title="Orchestrator Server", lifespan=lifespan)
+
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include the API router with /api prefix
+app.include_router(api_router, prefix="/api")
+
+print("user_middleware:", app.user_middleware)
+# Debug prints — temporary
+import pprint
+print("=== MIDDLEWARE DEBUG ===")
+print("app.user_middleware:")
+pprint.pprint(app.user_middleware)       # what you already printed
+print("app.middleware:", getattr(app, "middleware", None))
+print("app._middleware:", getattr(app, "_middleware", None))
+print("app.__dict__ keys (filtered):")
+pprint.pprint([k for k in app.__dict__.keys() if "mid" in k or "user" in k.lower()])
+print("========================")
 
 # Startup event to clean up stale data
 def cleanup_on_startup():
@@ -61,27 +97,6 @@ def cleanup_on_startup():
         db.rollback()
     finally:
         db.close()
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    cleanup_on_startup()
-    yield
-    # Shutdown
-    pass
-
-app = FastAPI(title="Orchestrator Server", lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5174", "http://localhost:5173"], 
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Include the API router with /api prefix
-app.include_router(api_router, prefix="/api")
 
 
 

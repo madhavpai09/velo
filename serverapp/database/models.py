@@ -26,7 +26,6 @@ class MatchedRide(Base):
     user_id = Column(Integer, nullable=False)
     driver_id = Column(Integer, nullable=False)
     ride_id = Column(Integer, nullable=True)
-    otp = Column(String, nullable=True)  # FIX: Added missing OTP column
-    status = Column(String, default="pending_notification")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    status = Column(String, default="ongoing")
+    created_at = Column(DateTime, default=datetime.utcnow)  # FIX: Added missing field
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

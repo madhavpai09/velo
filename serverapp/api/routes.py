@@ -11,7 +11,7 @@ import string
 router = APIRouter()
 
 def generate_otp(length: int = 4) -> str:
-    """Generate a random 4-digit OTP"""
+    """Generate a random OTP"""
     return ''.join(random.choices(string.digits, k=length))
 
 @router.post("/ping")
@@ -28,6 +28,7 @@ def create_ride_request(ride_request: RideRequestSchema, db: Session = Depends(g
     """
     try:
         if db is None:
+            # Fallback when database is not available
             print("📝 We will store this data in Postgres now")
             print(f"📍 Source: {ride_request.source_location}")
             print(f"📍 Destination: {ride_request.dest_location}")
@@ -206,19 +207,19 @@ def get_pending_ride_for_driver(driver_id: int, db: Session = Depends(get_db)):
 
 @router.get("/user/{user_id}/ride-status")
 def get_user_ride_status(user_id: int, db: Session = Depends(get_db)):
-    """Get ride status for a user (for web users to poll) - includes OTP"""
+    """Get ride status for a user (for web users to poll)"""
     try:
         # Find matches for this user that are pending notification or accepted
         match = db.query(MatchedRide).filter(
             MatchedRide.user_id == user_id,
-            MatchedRide.status.in_(["pending_notification", "accepted"])
+            MatchedRide.status == "pending_notification"
         ).first()
         
         if not match:
-            # Check if user has an in-progress ride
+            # Check if user has an accepted/matched ride
             ride = db.query(RideRequestModel).filter(
                 RideRequestModel.user_id == user_id,
-                RideRequestModel.status == "in_progress"
+                RideRequestModel.status.in_(["matched", "accepted", "in_progress"])
             ).order_by(RideRequestModel.created_at.desc()).first()
             
             if ride:
@@ -232,10 +233,9 @@ def get_user_ride_status(user_id: int, db: Session = Depends(get_db)):
                 return {
                     "has_ride": True,
                     "ride_id": ride.id,
-                    "status": "in_progress",
+                    "status": ride.status,
                     "driver_id": driver_id,
                     "otp": otp,
-                    "otp_verified": True,
                     "pickup_location": ride.source_location,
                     "dropoff_location": ride.dest_location
                 }
@@ -247,8 +247,8 @@ def get_user_ride_status(user_id: int, db: Session = Depends(get_db)):
         if not ride:
             return {"has_ride": False}
         
-        # Generate OTP if not already generated (only when driver accepts)
-        if match.status == "accepted" and not match.otp:
+        # Generate OTP if not already generated
+        if not match.otp:
             match.otp = generate_otp()
             db.commit()
             print(f"🔐 OTP generated for User {user_id} ↔ Driver {match.driver_id}: {match.otp}")
@@ -259,10 +259,9 @@ def get_user_ride_status(user_id: int, db: Session = Depends(get_db)):
         return {
             "has_ride": True,
             "ride_id": ride.id,
-            "status": match.status,
+            "status": "matched",
             "driver_id": match.driver_id,
-            "otp": match.otp,  # OTP for user to show driver
-            "otp_verified": ride.status == "in_progress",
+            "otp": match.otp,
             "driver_location": driver.current_location if driver else None,
             "pickup_location": ride.source_location,
             "dropoff_location": ride.dest_location,
@@ -273,7 +272,7 @@ def get_user_ride_status(user_id: int, db: Session = Depends(get_db)):
 
 @router.post("/driver/{driver_id}/accept-ride/{match_id}")
 def accept_ride_assignment(driver_id: int, match_id: int, db: Session = Depends(get_db)):
-    """Mark ride assignment as accepted by driver - generates OTP"""
+    """Mark ride assignment as accepted by driver"""
     try:
         match = db.query(MatchedRide).filter(
             MatchedRide.id == match_id,
@@ -283,75 +282,29 @@ def accept_ride_assignment(driver_id: int, match_id: int, db: Session = Depends(
         if not match:
             raise HTTPException(status_code=404, detail="Match not found")
         
-        # Update ride status to accepted (waiting for OTP verification)
+        # Update ride status to accepted
         ride = db.query(RideRequestModel).filter(RideRequestModel.id == match.ride_id).first()
         if ride:
             ride.status = "accepted"
-        
-        # Generate OTP when driver accepts
-        if not match.otp:
-            match.otp = generate_otp()
-            print(f"🔐 OTP generated: {match.otp} for User {match.user_id} ↔ Driver {driver_id}")
-        
-        # Update match status to "accepted" (waiting for OTP)
-        match.status = "accepted"
-        db.commit()
-        
-        print(f"✅ Driver {driver_id} accepted ride {match.ride_id}. Waiting for OTP verification.")
-        
-        return {
-            "message": "Ride accepted. Waiting for OTP verification.",
-            "ride_id": match.ride_id,
-            "requires_otp": True
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        print(f"❌ Error accepting ride for driver {driver_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/driver/{driver_id}/verify-otp/{match_id}")
-def verify_otp(driver_id: int, match_id: int, otp: str, db: Session = Depends(get_db)):
-    """Verify OTP to start the ride"""
-    try:
-        match = db.query(MatchedRide).filter(
-            MatchedRide.id == match_id,
-            MatchedRide.driver_id == driver_id
-        ).first()
-        
-        if not match:
-            raise HTTPException(status_code=404, detail="Match not found")
-        
-        # Check OTP
-        if match.otp != otp:
-            print(f"❌ Invalid OTP: Expected {match.otp}, got {otp}")
-            raise HTTPException(status_code=400, detail="Invalid OTP")
-        
-        # OTP verified! Start the ride
-        ride = db.query(RideRequestModel).filter(RideRequestModel.id == match.ride_id).first()
-        if ride:
-            ride.status = "in_progress"
         
         # Mark driver as unavailable (on a ride)
         driver = db.query(DriverInfo).filter(DriverInfo.driver_id == driver_id).first()
         if driver:
             driver.available = False
         
+        # Update match status to "accepted" so notifier doesn't try to process it again
+        # Keep the match in database so driver can complete it later
+        match.status = "accepted"
         db.commit()
         
-        print(f"✅ OTP verified! Ride {match.ride_id} started by driver {driver_id}")
+        print(f"✅ Driver {driver_id} accepted ride {match.ride_id}")
         
-        return {
-            "message": "OTP verified. Ride started!",
-            "ride_id": match.ride_id,
-            "status": "in_progress"
-        }
+        return {"message": "Ride accepted", "ride_id": match.ride_id}
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ Error verifying OTP: {e}")
+        print(f"❌ Error accepting ride for driver {driver_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/driver/{driver_id}/current-ride")
@@ -381,7 +334,6 @@ def get_driver_current_ride(driver_id: int, db: Session = Depends(get_db)):
             "ride_id": ride.id,
             "user_id": match.user_id,
             "status": ride.status,
-            "otp_required": match.status == "accepted" and ride.status != "in_progress",
             "pickup_location": ride.source_location,
             "dropoff_location": ride.dest_location,
             "match_id": match.id
@@ -393,19 +345,26 @@ def get_driver_current_ride(driver_id: int, db: Session = Depends(get_db)):
 def complete_ride(driver_id: int, ride_id: int, db: Session = Depends(get_db)):
     """Complete a ride and mark driver as available again"""
     try:
+        # First check if ride exists
         ride = db.query(RideRequestModel).filter(RideRequestModel.id == ride_id).first()
         if not ride:
             raise HTTPException(status_code=404, detail=f"Ride {ride_id} not found")
         
+        # Verify the ride belongs to this driver by checking match or ride status
         match = db.query(MatchedRide).filter(
             MatchedRide.driver_id == driver_id,
             MatchedRide.ride_id == ride_id
         ).first()
         
+        # If no match found, check if ride is already completed or if driver was assigned
+        # (match might have been deleted already, but we can still complete if ride status is accepted/matched)
         if not match:
+            # Check if ride is in a state that can be completed by this driver
             if ride.status in ["completed", "cancelled"]:
                 raise HTTPException(status_code=400, detail=f"Ride {ride_id} is already {ride.status}")
             
+            # Try to find match by driver_id and user_id (match might have been deleted)
+            # If ride status is accepted/matched, allow completion
             if ride.status not in ["accepted", "matched", "in_progress"]:
                 raise HTTPException(status_code=403, detail="Ride is not in a state that can be completed")
         
@@ -419,7 +378,7 @@ def complete_ride(driver_id: int, ride_id: int, db: Session = Depends(get_db)):
         else:
             raise HTTPException(status_code=404, detail=f"Driver {driver_id} not found")
         
-        # Delete the match record
+        # Delete the match record if it exists
         if match:
             db.delete(match)
         
