@@ -264,7 +264,33 @@ class VeloDriverClient:
         print(f"\n⏳ Waiting for ride assignments...")
         print(f"   (Use interactive mode to accept/decline rides)\n")
         
+        # Start heartbeat task
+        @self.app.on_event("startup")
+        async def start_heartbeat():
+            asyncio.create_task(self.heartbeat_loop())
+            
         uvicorn.run(self.app, host="0.0.0.0", port=self.driver_port, log_level="warning")
+
+    async def heartbeat_loop(self):
+        """Send heartbeat every 10 seconds"""
+        print("💓 Heartbeat loop started")
+        while True:
+            try:
+                await asyncio.sleep(10)
+                if self.is_available:
+                    try:
+                        requests.post(
+                            f"{self.dispatch_url}/driver/heartbeat",
+                            params={"driver_id": self.driver_id},
+                            timeout=5
+                        )
+                    except Exception as e:
+                        print(f"⚠️ Heartbeat failed: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"⚠️ Heartbeat loop error: {e}")
+                await asyncio.sleep(10)
 
 
 def interactive_mode(driver: VeloDriverClient):

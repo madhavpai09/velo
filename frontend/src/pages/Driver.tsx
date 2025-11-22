@@ -65,6 +65,24 @@ export default function Driver() {
     return () => clearInterval(pollInterval);
   }, [isRegistered, driverId, status]);
 
+  // Send heartbeat every 10 seconds when registered
+  useEffect(() => {
+    if (!isRegistered || !driverId) return;
+
+    const heartbeatInterval = setInterval(async () => {
+      try {
+        const fullDriverId = driverId.startsWith('DRIVER-') ? driverId : `DRIVER-${driverId}`;
+        await fetch(`http://localhost:8000/driver/heartbeat?driver_id=${encodeURIComponent(fullDriverId)}`, {
+          method: 'POST'
+        });
+      } catch (error) {
+        console.error('Heartbeat failed:', error);
+      }
+    }, 10000);
+
+    return () => clearInterval(heartbeatInterval);
+  }, [isRegistered, driverId]);
+
   // Poll for ride assignments when driver is online and available
   useEffect(() => {
     if (!isRegistered || !driverId || !isAvailable) return;

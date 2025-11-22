@@ -28,12 +28,25 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
 
-from __future__ import annotations
-
 import sys
 import types
-from collections.abc import Awaitable, Iterable, MutableMapping
-from typing import Any, Callable, Literal, Optional, Protocol, TypedDict, Union
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    Iterable,
+    MutableMapping,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+)
+
+if sys.version_info >= (3, 8):  # pragma: py-lt-38
+    from typing import Literal, Protocol, TypedDict
+else:  # pragma: py-gte-38
+    from typing_extensions import Literal, Protocol, TypedDict
 
 if sys.version_info >= (3, 11):  # pragma: py-lt-311
     from typing import NotRequired
@@ -42,15 +55,15 @@ else:  # pragma: py-gte-311
 
 # WSGI
 Environ = MutableMapping[str, Any]
-ExcInfo = tuple[type[BaseException], BaseException, Optional[types.TracebackType]]
-StartResponse = Callable[[str, Iterable[tuple[str, str]], Optional[ExcInfo]], None]
+ExcInfo = Tuple[Type[BaseException], BaseException, Optional[types.TracebackType]]
+StartResponse = Callable[[str, Iterable[Tuple[str, str]], Optional[ExcInfo]], None]
 WSGIApp = Callable[[Environ, StartResponse], Union[Iterable[bytes], BaseException]]
 
 
 # ASGI
 class ASGIVersions(TypedDict):
     spec_version: str
-    version: Literal["2.0"] | Literal["3.0"]
+    version: Union[Literal["2.0"], Literal["3.0"]]
 
 
 class HTTPScope(TypedDict):
@@ -63,11 +76,11 @@ class HTTPScope(TypedDict):
     raw_path: bytes
     query_string: bytes
     root_path: str
-    headers: Iterable[tuple[bytes, bytes]]
-    client: tuple[str, int] | None
-    server: tuple[str, int | None] | None
-    state: NotRequired[dict[str, Any]]
-    extensions: NotRequired[dict[str, dict[object, object]]]
+    headers: Iterable[Tuple[bytes, bytes]]
+    client: Optional[Tuple[str, int]]
+    server: Optional[Tuple[str, Optional[int]]]
+    state: NotRequired[Dict[str, Any]]
+    extensions: NotRequired[Dict[str, Dict[object, object]]]
 
 
 class WebSocketScope(TypedDict):
@@ -79,18 +92,18 @@ class WebSocketScope(TypedDict):
     raw_path: bytes
     query_string: bytes
     root_path: str
-    headers: Iterable[tuple[bytes, bytes]]
-    client: tuple[str, int] | None
-    server: tuple[str, int | None] | None
+    headers: Iterable[Tuple[bytes, bytes]]
+    client: Optional[Tuple[str, int]]
+    server: Optional[Tuple[str, Optional[int]]]
     subprotocols: Iterable[str]
-    state: NotRequired[dict[str, Any]]
-    extensions: NotRequired[dict[str, dict[object, object]]]
+    state: NotRequired[Dict[str, Any]]
+    extensions: NotRequired[Dict[str, Dict[object, object]]]
 
 
 class LifespanScope(TypedDict):
     type: Literal["lifespan"]
     asgi: ASGIVersions
-    state: NotRequired[dict[str, Any]]
+    state: NotRequired[Dict[str, Any]]
 
 
 WWWScope = Union[HTTPScope, WebSocketScope]
@@ -105,32 +118,32 @@ class HTTPRequestEvent(TypedDict):
 
 class HTTPResponseDebugEvent(TypedDict):
     type: Literal["http.response.debug"]
-    info: dict[str, object]
+    info: Dict[str, object]
 
 
 class HTTPResponseStartEvent(TypedDict):
     type: Literal["http.response.start"]
     status: int
-    headers: NotRequired[Iterable[tuple[bytes, bytes]]]
+    headers: Iterable[Tuple[bytes, bytes]]
     trailers: NotRequired[bool]
 
 
 class HTTPResponseBodyEvent(TypedDict):
     type: Literal["http.response.body"]
     body: bytes
-    more_body: NotRequired[bool]
+    more_body: bool
 
 
 class HTTPResponseTrailersEvent(TypedDict):
     type: Literal["http.response.trailers"]
-    headers: Iterable[tuple[bytes, bytes]]
+    headers: Iterable[Tuple[bytes, bytes]]
     more_trailers: bool
 
 
 class HTTPServerPushEvent(TypedDict):
     type: Literal["http.response.push"]
     path: str
-    headers: Iterable[tuple[bytes, bytes]]
+    headers: Iterable[Tuple[bytes, bytes]]
 
 
 class HTTPDisconnectEvent(TypedDict):
@@ -143,62 +156,43 @@ class WebSocketConnectEvent(TypedDict):
 
 class WebSocketAcceptEvent(TypedDict):
     type: Literal["websocket.accept"]
-    subprotocol: NotRequired[str | None]
-    headers: NotRequired[Iterable[tuple[bytes, bytes]]]
+    subprotocol: Optional[str]
+    headers: Iterable[Tuple[bytes, bytes]]
 
 
-class _WebSocketReceiveEventBytes(TypedDict):
+class WebSocketReceiveEvent(TypedDict):
     type: Literal["websocket.receive"]
-    bytes: bytes
-    text: NotRequired[None]
+    bytes: Optional[bytes]
+    text: Optional[str]
 
 
-class _WebSocketReceiveEventText(TypedDict):
-    type: Literal["websocket.receive"]
-    bytes: NotRequired[None]
-    text: str
-
-
-WebSocketReceiveEvent = Union[_WebSocketReceiveEventBytes, _WebSocketReceiveEventText]
-
-
-class _WebSocketSendEventBytes(TypedDict):
+class WebSocketSendEvent(TypedDict):
     type: Literal["websocket.send"]
-    bytes: bytes
-    text: NotRequired[None]
-
-
-class _WebSocketSendEventText(TypedDict):
-    type: Literal["websocket.send"]
-    bytes: NotRequired[None]
-    text: str
-
-
-WebSocketSendEvent = Union[_WebSocketSendEventBytes, _WebSocketSendEventText]
+    bytes: Optional[bytes]
+    text: Optional[str]
 
 
 class WebSocketResponseStartEvent(TypedDict):
     type: Literal["websocket.http.response.start"]
     status: int
-    headers: Iterable[tuple[bytes, bytes]]
+    headers: Iterable[Tuple[bytes, bytes]]
 
 
 class WebSocketResponseBodyEvent(TypedDict):
     type: Literal["websocket.http.response.body"]
     body: bytes
-    more_body: NotRequired[bool]
+    more_body: bool
 
 
 class WebSocketDisconnectEvent(TypedDict):
     type: Literal["websocket.disconnect"]
     code: int
-    reason: NotRequired[str | None]
 
 
 class WebSocketCloseEvent(TypedDict):
     type: Literal["websocket.close"]
-    code: NotRequired[int]
-    reason: NotRequired[str | None]
+    code: int
+    reason: Optional[str]
 
 
 class LifespanStartupEvent(TypedDict):
@@ -227,7 +221,9 @@ class LifespanShutdownFailedEvent(TypedDict):
     message: str
 
 
-WebSocketEvent = Union[WebSocketReceiveEvent, WebSocketDisconnectEvent, WebSocketConnectEvent]
+WebSocketEvent = Union[
+    WebSocketReceiveEvent, WebSocketDisconnectEvent, WebSocketConnectEvent
+]
 
 
 ASGIReceiveEvent = Union[
@@ -264,12 +260,16 @@ ASGISendCallable = Callable[[ASGISendEvent], Awaitable[None]]
 
 
 class ASGI2Protocol(Protocol):
-    def __init__(self, scope: Scope) -> None: ...  # pragma: no cover
+    def __init__(self, scope: Scope) -> None:
+        ...  # pragma: no cover
 
-    async def __call__(self, receive: ASGIReceiveCallable, send: ASGISendCallable) -> None: ...  # pragma: no cover
+    async def __call__(
+        self, receive: ASGIReceiveCallable, send: ASGISendCallable
+    ) -> None:
+        ...  # pragma: no cover
 
 
-ASGI2Application = type[ASGI2Protocol]
+ASGI2Application = Type[ASGI2Protocol]
 ASGI3Application = Callable[
     [
         Scope,

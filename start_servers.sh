@@ -16,6 +16,15 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
+# Check for virtual environment
+PYTHON_CMD="python3"
+if [ -f "$SCRIPT_DIR/serverapp/.venv/bin/python" ]; then
+    PYTHON_CMD="$SCRIPT_DIR/serverapp/.venv/bin/python"
+    echo "✅ Using virtual environment: $PYTHON_CMD"
+else
+    echo "⚠️  Virtual environment not found, using system python3"
+fi
+
 # Function to start a service in a new terminal window
 start_service() {
     local service_name=$1
@@ -26,14 +35,14 @@ start_service() {
     
     if [[ "$OSTYPE" == "darwin"* ]]; then
         # macOS
-        osascript -e "tell application \"Terminal\" to do script \"cd '$SCRIPT_DIR/serverapp' && python3 $script_name\""
+        osascript -e "tell application \"Terminal\" to do script \"cd '$SCRIPT_DIR/serverapp' && '$PYTHON_CMD' $script_name\""
     elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
         # Linux
-        gnome-terminal -- bash -c "cd '$SCRIPT_DIR/serverapp' && python3 $script_name; exec bash" 2>/dev/null || \
-        xterm -e "cd '$SCRIPT_DIR/serverapp' && python3 $script_name" 2>/dev/null || \
-        echo "⚠️  Could not open new terminal. Please run manually: cd serverapp && python3 $script_name"
+        gnome-terminal -- bash -c "cd '$SCRIPT_DIR/serverapp' && '$PYTHON_CMD' $script_name; exec bash" 2>/dev/null || \
+        xterm -e "cd '$SCRIPT_DIR/serverapp' && '$PYTHON_CMD' $script_name" 2>/dev/null || \
+        echo "⚠️  Could not open new terminal. Please run manually: cd serverapp && $PYTHON_CMD $script_name"
     else
-        echo "⚠️  Unsupported OS. Please run manually: cd serverapp && python3 $script_name"
+        echo "⚠️  Unsupported OS. Please run manually: cd serverapp && $PYTHON_CMD $script_name"
     fi
     
     sleep 1

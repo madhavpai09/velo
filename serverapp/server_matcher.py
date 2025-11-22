@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 import asyncio
 import requests
 import sys
+from datetime import datetime
 import os
 from contextlib import asynccontextmanager
 
@@ -32,10 +33,29 @@ def is_driver_online(driver_id: int, db=None) -> bool:
                     # Python client is online
                     return data.get('driver_id') == f"DRIVER-{driver_id}" and data.get('is_available', False)
             except:
-                # Port doesn't exist (web driver) - trust database
+                # Port doesn't exist (web driver) - check heartbeat
                 pass
-            # Web driver - trust database availability
+            
+            # Check for recent heartbeat (within last 30 seconds)
+            # If no heartbeat in 30s, assume offline
+            if driver.updated_at:
+                # Handle naive vs aware datetime
+                now = datetime.utcnow()
+                last_update = driver.updated_at
+                if last_update.tzinfo:
+                    last_update = last_update.replace(tzinfo=None)
+                
+                time_diff = (now - last_update).total_seconds()
+                if time_diff < 30:
+                    return True
+                else:
+                    print(f"   ❌ Driver {driver_id} offline (Last heartbeat: {int(time_diff)}s ago)")
+                    return False
+            
+            # If updated_at is None (legacy), fallback to True but warn
+            print(f"   ⚠️  Driver {driver_id} has no heartbeat info, assuming online (Legacy)")
             return True
+            
         return False
     
     # Fallback: try port check (for Python clients)

@@ -1,9 +1,7 @@
-from __future__ import annotations
-
 import asyncio
 import logging
 from asyncio import Queue
-from typing import Any, Union
+from typing import Any, Dict, Union
 
 from uvicorn import Config
 from uvicorn._types import (
@@ -37,12 +35,12 @@ class LifespanOn:
         self.logger = logging.getLogger("uvicorn.error")
         self.startup_event = asyncio.Event()
         self.shutdown_event = asyncio.Event()
-        self.receive_queue: Queue[LifespanReceiveMessage] = asyncio.Queue()
+        self.receive_queue: "Queue[LifespanReceiveMessage]" = asyncio.Queue()
         self.error_occured = False
         self.startup_failed = False
         self.shutdown_failed = False
         self.should_exit = False
-        self.state: dict[str, Any] = {}
+        self.state: Dict[str, Any] = {}
 
     async def startup(self) -> None:
         self.logger.info("Waiting for application startup.")
@@ -50,7 +48,7 @@ class LifespanOn:
         loop = asyncio.get_event_loop()
         main_lifespan_task = loop.create_task(self.main())  # noqa: F841
         # Keep a hard reference to prevent garbage collection
-        # See https://github.com/Kludex/uvicorn/pull/972
+        # See https://github.com/encode/uvicorn/pull/972
         startup_event: LifespanStartupEvent = {"type": "lifespan.startup"}
         await self.receive_queue.put(startup_event)
         await self.startup_event.wait()
@@ -69,7 +67,9 @@ class LifespanOn:
         await self.receive_queue.put(shutdown_event)
         await self.shutdown_event.wait()
 
-        if self.shutdown_failed or (self.error_occured and self.config.lifespan == "on"):
+        if self.shutdown_failed or (
+            self.error_occured and self.config.lifespan == "on"
+        ):
             self.logger.error("Application shutdown failed. Exiting.")
             self.should_exit = True
         else:
@@ -99,7 +99,7 @@ class LifespanOn:
             self.startup_event.set()
             self.shutdown_event.set()
 
-    async def send(self, message: LifespanSendMessage) -> None:
+    async def send(self, message: "LifespanSendMessage") -> None:
         assert message["type"] in (
             "lifespan.startup.complete",
             "lifespan.startup.failed",
@@ -133,5 +133,5 @@ class LifespanOn:
             if message.get("message"):
                 self.logger.error(message["message"])
 
-    async def receive(self) -> LifespanReceiveMessage:
+    async def receive(self) -> "LifespanReceiveMessage":
         return await self.receive_queue.get()

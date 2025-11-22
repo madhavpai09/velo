@@ -95,18 +95,29 @@ export const registerDriver = async (
   name: string,
   location: Location
 ): Promise<any> => {
-  const response = await fetch('http://localhost:8000/driver/register', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      driver_id: driverId,
-      name: name,
-      port: parseInt(driverId.replace('DRIVER-', '')) || 9000,
-      location: location,
-    }),
-  });
-  if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-  return await response.json();
+  try {
+    const response = await fetch('http://localhost:8000/driver/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        driver_id: driverId.startsWith('DRIVER-') ? driverId : `DRIVER-${driverId}`,
+        name: name,
+        port: parseInt(driverId.replace('DRIVER-', '')) || 9000,
+        location: location,
+      }),
+    });
+    
+    // FIX: Extract backend error message
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+      throw new Error(errorData.detail || errorData.message || `HTTP ${response.status}`);
+    }
+    
+    return await response.json();
+  } catch (error: any) {
+    // FIX: Preserve original error message
+    throw new Error(error.message || 'Network request failed');
+  }
 };
 
 export const setDriverAvailability = async (

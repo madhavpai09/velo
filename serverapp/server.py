@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import requests
 import time
 import sys
@@ -12,22 +13,59 @@ from database.models import Base, RideRequest, DriverInfo, MatchedRide
 from models.schemas import RideCreate, DriverCreate, UpdateMatchPayload
 from api.routes import router as api_router
 from pydantic import BaseModel
-from contextlib import asynccontextmanager
+from datetime import datetime
 
 Base.metadata.create_all(bind=engine)
 
 
+# Define cleanup_on_startup FIRST
+def cleanup_on_startup():
+    """Clean up stale matches and reset ride/driver states on server startup"""
+    db = SessionLocal()
+    try:
+        print("\n🧹 Performing startup cleanup...")
+        
+        old_matches = db.query(MatchedRide).filter(
+            MatchedRide.status.in_(["pending_notification", "accepted"])
+        ).all()
+        
+        if old_matches:
+            print(f"   🗑️  Removing {len(old_matches)} old match(es)...")
+            for match in old_matches:
+                driver = db.query(DriverInfo).filter(
+                    DriverInfo.driver_id == match.driver_id
+                ).first()
+                if driver and not driver.available:
+                    driver.available = True
+                db.delete(match)
+        
+        stuck_rides = db.query(RideRequest).filter(
+            RideRequest.status.in_(["matched", "broadcasting"])
+        ).all()
+        
+        if stuck_rides:
+            print(f"   🗑️  Resetting {len(stuck_rides)} stuck ride(s)...")
+            for ride in stuck_rides:
+                ride.status = "pending"
+        
+        db.commit()
+        print("   ✅ Cleanup complete\n")
+    except Exception as e:
+        print(f"   ⚠️  Cleanup error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+# Define lifespan SECOND
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     cleanup_on_startup()
     yield
-    # Shutdown
-    pass
 
+
+# Create app THIRD
 app = FastAPI(title="Orchestrator Server", lifespan=lifespan)
-
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,20 +75,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include the API router with /api prefix
 app.include_router(api_router, prefix="/api")
 
-print("user_middleware:", app.user_middleware)
-# Debug prints — temporary
-import pprint
-print("=== MIDDLEWARE DEBUG ===")
-print("app.user_middleware:")
-pprint.pprint(app.user_middleware)       # what you already printed
-print("app.middleware:", getattr(app, "middleware", None))
-print("app._middleware:", getattr(app, "_middleware", None))
-print("app.__dict__ keys (filtered):")
-pprint.pprint([k for k in app.__dict__.keys() if "mid" in k or "user" in k.lower()])
-print("========================")
+# Continue with the rest of the file...
+
+
 
 # Startup event to clean up stale data
 def cleanup_on_startup():
@@ -147,23 +176,93 @@ def get_ride_request(ride_id: int, db: Session = Depends(get_db)):
 
 @app.post("/driver/register")
 def register_driver(driver: DriverRegister, db: Session = Depends(get_db)):
-    """Register a new driver with the dispatch system"""
+    """Register a new driver with the dispatch system - FIXED VERSION"""
     try:
-        # Extract numeric ID from DRIVER-XXXX format
-        numeric_id = int(driver.driver_id.replace("DRIVER-", ""))
+        print(f"\n📥 Received registration request:")
+        print(f"   driver_id: {driver.driver_id}")
+        print(f"   name: {driver.name}")
+        print(f"   port: {driver.port}")
+        print(f"   location: {driver.location}")
         
-        # Check if driver already exists
+        # FIX 1: Safe driver_id extraction
+        raw_id = str(driver.driver_id).strip()
+        
+        # Handle both "DRIVER-1234" and "1234" formats
+        if raw_id.upper().startswith("DRIVER-"):
+            raw_id = raw_id[7:]  # Remove "DRIVER-" prefix (7 characters)
+        
+        # Validate not empty
+        if not raw_id:
+            print("❌ Error: Empty driver_id")
+            raise HTTPException(
+                status_code=400,
+                detail="driver_id cannot be empty"
+            )
+        
+        # Validate numeric
+        try:
+            numeric_id = int(raw_id)
+        except ValueError as e:
+            print(f"❌ Error: Non-numeric driver_id: {raw_id}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"driver_id must be numeric. Got: {driver.driver_id}"
+            )
+        
+        # Validate positive
+        if numeric_id <= 0:
+            print(f"❌ Error: Negative or zero driver_id: {numeric_id}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"driver_id must be positive. Got: {numeric_id}"
+            )
+        
+        print(f"✅ Parsed driver_id: {numeric_id}")
+        
+        # FIX 2: Safe location extraction
+        try:
+            if isinstance(driver.location, dict):
+                lat = float(driver.location.get('lat', 0))
+                lng = float(driver.location.get('lng', 0))
+            else:
+                print(f"❌ Error: Invalid location type: {type(driver.location)}")
+                raise HTTPException(
+                    status_code=400,
+                    detail="location must be an object with lat and lng"
+                )
+            
+            location_str = f"{lat},{lng}"
+            print(f"✅ Parsed location: {location_str}")
+            
+        except (KeyError, ValueError, TypeError) as e:
+            print(f"❌ Error parsing location: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid location format. Expected {{lat: number, lng: number}}"
+            )
+        
+        # FIX 3: Safe database operations
+        if db is None:
+            print("⚠️  Warning: Database not available, simulating success")
+            return {
+                "message": "Driver registered successfully (no DB)",
+                "driver_id": f"DRIVER-{numeric_id}",
+                "numeric_id": numeric_id,
+                "status": "available",
+                "location": location_str
+            }
+        
+        # Check if driver exists
         existing = db.query(DriverInfo).filter(
             DriverInfo.driver_id == numeric_id
         ).first()
-        
-        location_str = f"{driver.location['lat']},{driver.location['lng']}"
         
         if existing:
             # Update existing driver
             existing.available = True
             existing.current_location = location_str
             message = "Driver re-registered successfully"
+            print(f"🔄 Updated existing driver: {numeric_id}")
         else:
             # Create new driver
             new_driver = DriverInfo(
@@ -173,20 +272,40 @@ def register_driver(driver: DriverRegister, db: Session = Depends(get_db)):
             )
             db.add(new_driver)
             message = "Driver registered successfully"
+            print(f"✅ Created new driver: {numeric_id}")
         
         db.commit()
         
-        print(f"✅ {message}: {driver.driver_id} (Port: {driver.port})")
-        
-        return {
+        result = {
             "message": message,
-            "driver_id": driver.driver_id,
+            "driver_id": f"DRIVER-{numeric_id}",
+            "numeric_id": numeric_id,
             "status": "available",
-            "location": location_str
+            "location": location_str,
+            "port": driver.port
         }
+        
+        print(f"✅ Registration successful: {result}")
+        return result
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions (already have proper status codes)
+        raise
+        
     except Exception as e:
-        print(f"❌ Driver registration failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
+        # Catch ANY other error and return detailed 500
+        error_msg = f"Unexpected error: {str(e)}"
+        print(f"\n❌ CRITICAL ERROR in register_driver:")
+        print(f"   Error type: {type(e).__name__}")
+        print(f"   Error message: {str(e)}")
+        
+        import traceback
+        traceback.print_exc()
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"Registration failed: {type(e).__name__}: {str(e)}"
+        )
 
 @app.post("/driver/update-location")
 def update_driver_location(driver_id: str, location: dict, db: Session = Depends(get_db)):
@@ -220,6 +339,23 @@ def set_driver_availability(driver_id: str, is_available: bool, db: Session = De
         db.commit()
         
         return {"message": "Availability updated", "is_available": is_available}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/driver/heartbeat")
+def driver_heartbeat(driver_id: str, db: Session = Depends(get_db)):
+    """Update driver heartbeat"""
+    try:
+        numeric_id = int(driver_id.replace("DRIVER-", ""))
+        driver = db.query(DriverInfo).filter(DriverInfo.driver_id == numeric_id).first()
+        
+        if not driver:
+            raise HTTPException(status_code=404, detail="Driver not found")
+        
+        # Explicitly update updated_at
+        driver.updated_at = datetime.utcnow()
+        db.commit()
+        return {"status": "ok", "timestamp": driver.updated_at.isoformat()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

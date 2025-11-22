@@ -1,15 +1,11 @@
-from __future__ import annotations
-
 import asyncio
 import urllib.parse
+from typing import Optional, Tuple
 
 from uvicorn._types import WWWScope
 
 
-class ClientDisconnected(OSError): ...
-
-
-def get_remote_addr(transport: asyncio.Transport) -> tuple[str, int] | None:
+def get_remote_addr(transport: asyncio.Transport) -> Optional[Tuple[str, int]]:
     socket_info = transport.get_extra_info("socket")
     if socket_info is not None:
         try:
@@ -26,7 +22,7 @@ def get_remote_addr(transport: asyncio.Transport) -> tuple[str, int] | None:
     return None
 
 
-def get_local_addr(transport: asyncio.Transport) -> tuple[str, int] | None:
+def get_local_addr(transport: asyncio.Transport) -> Optional[Tuple[str, int]]:
     socket_info = transport.get_extra_info("socket")
     if socket_info is not None:
         info = socket_info.getsockname()
@@ -42,15 +38,17 @@ def is_ssl(transport: asyncio.Transport) -> bool:
     return bool(transport.get_extra_info("sslcontext"))
 
 
-def get_client_addr(scope: WWWScope) -> str:
+def get_client_addr(scope: "WWWScope") -> str:
     client = scope.get("client")
     if not client:
         return ""
     return "%s:%d" % client
 
 
-def get_path_with_query_string(scope: WWWScope) -> str:
+def get_path_with_query_string(scope: "WWWScope") -> str:
     path_with_query_string = urllib.parse.quote(scope["path"])
     if scope["query_string"]:
-        path_with_query_string = "{}?{}".format(path_with_query_string, scope["query_string"].decode("ascii"))
+        path_with_query_string = "{}?{}".format(
+            path_with_query_string, scope["query_string"].decode("ascii")
+        )
     return path_with_query_string
