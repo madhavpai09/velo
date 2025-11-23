@@ -136,20 +136,22 @@ async def matcher_loop():
                 print(f"   To: {ride.dest_location}")
 
                 # Update statuses
-                ride.status = "matched"
-                online_driver.available = False
-
-                # Create matched ride record with status="pending_notification"
+                ride.status = "broadcasting"
+                # Don't mark driver as unavailable yet - they might reject
+                # But to prevent double offering, we might want to? 
+                # For now, let's keep them available but the ride is 'broadcasting' so it won't be picked up again
+                
+                # Create matched ride record with status="offered"
                 matched = MatchedRide(
                     user_id=ride.user_id,
                     driver_id=online_driver.driver_id,
                     ride_id=ride.id,  # Store ride_id for direct lookup
-                    status="pending_notification"
+                    status="offered"
                 )
                 db.add(matched)
                 db.commit()
                 
-                print(f"   ✅ Match stored in database (ID: {matched.id})")
+                print(f"   ✅ Ride offered to driver {online_driver.driver_id} (Match ID: {matched.id})")
                     
             finally:
                 db.close()

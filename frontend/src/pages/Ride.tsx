@@ -1,138 +1,334 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getAllRideRequests } from '../utils/api';
+import MapView from '../shared/MapView';
+import {
+  createRideRequest,
+  getAvailableDrivers,
+  DriverForMap
+} from '../utils/api';
 
-interface RideData {
-  id: number;
-  source_location: string;
-  dest_location: string;
-  user_id: number;
-  status: string;
-  created_at: string;
+interface AssignedDriver {
+  ride_id?: number;
+  driver_id: number;
+  driver_name: string;
+  driver_location: string;
+  pickup_location: string;
+  dropoff_location: string;
+  status?: string;
+  otp?: string;
 }
 
 export default function Ride() {
   const navigate = useNavigate();
-  const [rides, setRides] = useState<RideData[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [pickupLocation, setPickupLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [dropoffLocation, setDropoffLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [drivers, setDrivers] = useState<DriverForMap[]>([]);
+  const [rideId, setRideId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [selectionMode, setSelectionMode] = useState<'pickup' | 'dropoff'>('pickup');
+  const [assignedDriver, setAssignedDriver] = useState<AssignedDriver | null>(null);
+  const [waitingForDriver, setWaitingForDriver] = useState(false);
+  const [userId, setUserId] = useState<number | null>(null);
+  const [showUserIdInput, setShowUserIdInput] = useState(true);
+
+  // Default center (Bangalore)
+  const mapCenter: [number, number] = [12.9716, 77.5946];
 
   useEffect(() => {
-    fetchRides();
-    const interval = setInterval(fetchRides, 3000);
+    fetchDrivers();
+    const interval = setInterval(fetchDrivers, 5000);
     return () => clearInterval(interval);
   }, []);
 
-  const fetchRides = async () => {
+  useEffect(() => {
+    if (!userId) return;
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const response = await fetch(`http://localhost:8000/api/user/${userId}/ride-status`);
+        if (response.ok) {
+          const data = await response.json();
+
+          if (data.has_ride) {
+            setWaitingForDriver(false);
+
+            if (data.status === 'matched' || data.status === 'accepted' || data.status === 'in_progress') {
+              console.log('📊 Ride status data:', data);
+              console.log('🔐 OTP value:', data.otp);
+              setAssignedDriver({
+                ride_id: data.ride_id,
+                driver_id: data.driver_id,
+                driver_name: `Driver ${data.driver_id}`,
+                driver_location: data.driver_location || 'Unknown',
+                pickup_location: data.pickup_location,
+                dropoff_location: data.dropoff_location,
+                status: data.status,
+                otp: data.otp
+              });
+
+              if (data.ride_id) {
+                setRideId(data.ride_id);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Failed to poll ride status:', error);
+      }
+    }, 2000);
+
+    return () => clearInterval(pollInterval);
+  }, [userId]);
+
+  const fetchDrivers = async () => {
+    const driverData = await getAvailableDrivers();
+    setDrivers(driverData);
+  };
+
+  const handleLocationSelect = (lat: number, lng: number) => {
+    if (selectionMode === 'pickup') {
+      setPickupLocation({ lat, lng });
+      setSelectionMode('dropoff');
+    } else {
+      setDropoffLocation({ lat, lng });
+    }
+  };
+
+  const handleRequestRide = async () => {
+    if (!pickupLocation || !dropoffLocation) {
+      alert('Please select both pickup and dropoff locations');
+      return;
+    }
+
+    setLoading(true);
     try {
-      const data = await getAllRideRequests();
-      setRides(data);
-    } catch (error) {
-      console.error('Failed to fetch rides:', error);
+      const response = await createRideRequest(
+        pickupLocation,
+        dropoffLocation,
+        userId || 7000
+      );
+
+      setRideId(response.data.id);
+      setWaitingForDriver(true);
+    } catch (error: any) {
+      console.error('❌ Failed to create ride:', error);
+      alert(`Failed to create ride: ${error.message}`);
     } finally {
       setLoading(false);
     }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status.toLowerCase()) {
-      case 'pending': return 'bg-yellow-100 text-yellow-800';
-      case 'matched': return 'bg-blue-100 text-blue-800';
-      case 'in_progress': return 'bg-green-100 text-green-800';
-      case 'completed': return 'bg-gray-100 text-gray-800';
-      default: return 'bg-gray-100 text-gray-800';
-    }
+  const handleNewRide = () => {
+    setRideId(null);
+    setAssignedDriver(null);
+    setWaitingForDriver(false);
+    setPickupLocation(null);
+    setDropoffLocation(null);
+    setSelectionMode('pickup');
   };
 
-  return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-gradient-to-r from-blue-600 to-blue-800 text-white shadow-lg">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <button 
-                onClick={() => navigate('/user')}
-                className="text-2xl hover:scale-110 transition-transform"
-              >
-                ←
-              </button>
-              <div>
-                <h1 className="text-3xl font-bold">All Rides</h1>
-                <p className="text-sm text-blue-200">View and track rides</p>
-              </div>
+  if (showUserIdInput) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex items-center justify-center p-4 relative overflow-hidden">
+        {/* Decorative background elements */}
+        <div className="absolute top-0 left-0 w-96 h-96 bg-blue-200 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob"></div>
+        <div className="absolute top-0 right-0 w-96 h-96 bg-purple-200 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-2000"></div>
+        <div className="absolute bottom-0 left-1/2 w-96 h-96 bg-pink-200 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-4000"></div>
+
+        <div className="bg-white/80 backdrop-blur-lg p-8 rounded-3xl shadow-2xl max-w-md w-full border border-white/20 relative z-10">
+          <div className="text-center mb-8">
+            <div className="inline-block p-4 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl mb-4">
+              <span className="text-4xl">🛺</span>
             </div>
-            <div className="flex items-center gap-3">
+            <h2 className="text-3xl font-bold mb-2 bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">Welcome to VELO</h2>
+            <p className="text-gray-600">Enter your User ID to continue</p>
+          </div>
+
+          <input
+            type="number"
+            value={userId || ''}
+            onChange={(e) => setUserId(parseInt(e.target.value) || null)}
+            placeholder="e.g., 7000"
+            className="w-full bg-gray-50 p-4 rounded-xl mb-4 text-lg focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-200 transition-all"
+          />
+          <button
+            onClick={() => {
+              if (userId) setShowUserIdInput(false);
+              else alert('Please enter a valid User ID');
+            }}
+            className="w-full bg-gradient-to-r from-blue-600 to-purple-600 text-white py-4 rounded-xl font-medium text-lg hover:shadow-lg hover:scale-[1.02] transition-all duration-200"
+          >
+            Continue
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-screen w-screen flex flex-col md:flex-row overflow-hidden relative">
+      {/* Sidebar Panel */}
+      <div className="w-full md:w-[450px] bg-white z-20 shadow-2xl flex flex-col h-[50vh] md:h-full overflow-y-auto">
+        {/* Header */}
+        <div className="p-6 border-b border-gray-100 flex justify-between items-center">
+          <div className="text-2xl font-normal tracking-tight cursor-pointer" onClick={() => navigate('/')}>VELO Cabs</div>
+          <div className="flex items-center gap-3">
+            <div className="text-sm font-medium">User {userId}</div>
+            <div className="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center">👤</div>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="p-6 flex-1">
+          {assignedDriver ? (
+            <div className="space-y-6 animate-fade-in">
+              {assignedDriver.status === 'in_progress' ? (
+                <div className="bg-green-50 p-6 rounded-xl border border-green-100 text-center">
+                  <div className="text-6xl mb-4 animate-bounce">🛺</div>
+                  <h2 className="text-2xl font-bold text-green-800 mb-2">On Ride</h2>
+                  <p className="text-green-600">Heading to destination</p>
+                </div>
+              ) : (
+                <div className="bg-green-50 p-6 rounded-xl border border-green-100">
+                  <div className="text-center mb-4">
+                    <div className="text-5xl mb-2">🛺</div>
+                    <h2 className="text-xl font-bold text-gray-900">Driver Arriving</h2>
+                    <p className="text-gray-500">{assignedDriver.driver_name}</p>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between p-3 bg-white rounded-lg">
+                      <span className="text-gray-500">Status</span>
+                      <span className="font-medium text-green-600 capitalize">{assignedDriver.status?.replace('_', ' ')}</span>
+                    </div>
+                    <div className="flex items-center justify-between p-3 bg-white rounded-lg">
+                      <span className="text-gray-500">Vehicle</span>
+                      <span className="font-medium">Piaggio Ape • KA 01 AB 5789</span>
+                    </div>
+                    {assignedDriver.otp && (
+                      <div className="flex items-center justify-between p-4 bg-black text-white rounded-lg shadow-lg">
+                        <span className="text-gray-300">OTP</span>
+                        <span className="font-mono text-2xl font-bold tracking-widest">{assignedDriver.otp}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <button
-                onClick={() => navigate('/user')}
-                className="bg-white text-blue-600 px-4 py-2 rounded-lg font-semibold hover:bg-blue-50 transition-colors"
+                onClick={handleNewRide}
+                className="w-full bg-gray-100 text-black py-4 rounded-lg font-medium hover:bg-gray-200 transition-colors"
               >
                 New Ride
               </button>
-              <button
-                onClick={() => navigate('/')}
-                className="bg-white/20 text-white px-4 py-2 rounded-lg font-semibold hover:bg-white/30 transition-colors"
-              >
-                Switch Role
-              </button>
             </div>
-          </div>
-        </div>
-      </header>
+          ) : waitingForDriver ? (
+            <div className="text-center py-12 space-y-6">
+              <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center mx-auto animate-pulse">
+                <span className="text-4xl">📡</span>
+              </div>
+              <div>
+                <h2 className="text-2xl font-bold mb-2">Finding your ride</h2>
+                <p className="text-gray-500">Connecting you with nearby drivers...</p>
+              </div>
+              <div className="w-full bg-gray-100 h-1.5 rounded-full overflow-hidden">
+                <div className="h-full bg-black w-1/2 animate-[shimmer_1.5s_infinite]"></div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <h1 className="text-3xl font-bold">Get a ride</h1>
 
-      {/* Content */}
-      <div className="container mx-auto px-4 py-8">
-        {loading ? (
-          <div className="text-center py-20">
-            <div className="text-6xl mb-4">⏳</div>
-            <p className="text-gray-600">Loading rides...</p>
-          </div>
-        ) : rides.length === 0 ? (
-          <div className="text-center py-20">
-            <div className="text-6xl mb-4">🚗</div>
-            <p className="text-gray-600 mb-4">No rides yet</p>
-            <button
-              onClick={() => navigate('/user')}
-              className="bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700"
-            >
-              Request Your First Ride
-            </button>
-          </div>
-        ) : (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {rides.map((ride) => (
-              <div 
-                key={ride.id}
-                className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow"
-              >
-                <div className="flex items-center justify-between mb-4">
-                  <span className="text-lg font-bold text-gray-800">
-                    Ride #{ride.id}
-                  </span>
-                  <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getStatusColor(ride.status)}`}>
-                    {ride.status}
-                  </span>
+              {/* Input Fields */}
+              <div className="relative space-y-4">
+                {/* Connecting Line */}
+                <div className="absolute left-4 top-10 bottom-10 w-0.5 bg-gray-300"></div>
+
+                <div className="relative">
+                  <div className={`absolute left-3 top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full ${selectionMode === 'pickup' ? 'bg-black ring-4 ring-black/10' : 'bg-gray-400'}`}></div>
+                  <input
+                    type="text"
+                    readOnly
+                    value={pickupLocation ? `${pickupLocation.lat.toFixed(4)}, ${pickupLocation.lng.toFixed(4)}` : ''}
+                    placeholder="Pickup location"
+                    onClick={() => setSelectionMode('pickup')}
+                    className={`w-full bg-gray-100 p-3 pl-10 rounded-lg cursor-pointer transition-all ${selectionMode === 'pickup' ? 'ring-2 ring-black bg-white' : ''}`}
+                  />
                 </div>
 
-                <div className="space-y-3 text-sm">
-                  <div>
-                    <div className="text-gray-500 text-xs mb-1">📍 Pickup</div>
-                    <div className="font-mono text-gray-800">{ride.source_location}</div>
-                  </div>
-
-                  <div>
-                    <div className="text-gray-500 text-xs mb-1">🎯 Dropoff</div>
-                    <div className="font-mono text-gray-800">{ride.dest_location}</div>
-                  </div>
-
-                  <div className="pt-3 border-t flex items-center justify-between text-xs text-gray-500">
-                    <span>User: {ride.user_id}</span>
-                    <span>{new Date(ride.created_at).toLocaleTimeString()}</span>
-                  </div>
+                <div className="relative">
+                  <div className={`absolute left-3 top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-black square`}></div>
+                  <input
+                    type="text"
+                    readOnly
+                    value={dropoffLocation ? `${dropoffLocation.lat.toFixed(4)}, ${dropoffLocation.lng.toFixed(4)}` : ''}
+                    placeholder="Dropoff location"
+                    onClick={() => setSelectionMode('dropoff')}
+                    className={`w-full bg-gray-100 p-3 pl-10 rounded-lg cursor-pointer transition-all ${selectionMode === 'dropoff' ? 'ring-2 ring-black bg-white' : ''}`}
+                  />
                 </div>
               </div>
-            ))}
+
+              {/* Ride Options */}
+              {pickupLocation && dropoffLocation && (
+                <div className="space-y-3 pt-4">
+                  <h3 className="font-medium text-gray-500 mb-2">Suggested Rides</h3>
+
+                  <div className="flex items-center justify-between p-4 border-2 border-black rounded-xl bg-white cursor-pointer hover:bg-gray-50 transition-colors">
+                    <div className="flex items-center gap-4">
+                      <div className="w-16"><img src="https://www.uber-assets.com/image/upload/f_auto,q_auto:eco,c_fill,w_188,h_188/v1548646935/assets/64/93c255-87c8-4e2e-9429-cf709bf1b838/original/3.png" alt="UberX" /></div>
+                      <div>
+                        <div className="font-bold text-lg flex items-center gap-2">VELO Auto <span className="text-xs font-normal text-gray-500">👤 3</span></div>
+                        <div className="text-sm text-gray-500">Affordable, everyday rides</div>
+                      </div>
+                    </div>
+                    <div className="font-bold text-lg">₹100</div>
+                  </div>
+
+                  <div className="flex items-center justify-between p-4 border border-gray-200 rounded-xl bg-white cursor-pointer hover:bg-gray-50 transition-colors opacity-60">
+                    <div className="flex items-center gap-4">
+                      <div className="w-16"><img src="https://www.uber-assets.com/image/upload/f_auto,q_auto:eco,c_fill,w_188,h_188/v1649231091/assets/2c/7fa194-c954-49b2-9c6d-a3b8601370f5/original/Uber_Moto_Orange_312x312_Logo_0690d9.png" alt="Moto" /></div>
+                      <div>
+                        <div className="font-bold text-lg flex items-center gap-2">Moto <span className="text-xs font-normal text-gray-500">👤 1</span></div>
+                        <div className="text-sm text-gray-500">Affordable motorcycle rides</div>
+                      </div>
+                    </div>
+                    <div className="font-bold text-lg">Coming Soon</div>
+                  </div>
+                </div>
+              )}
+
+              <button
+                onClick={handleRequestRide}
+                disabled={!pickupLocation || !dropoffLocation || loading}
+                className="w-full bg-black text-white py-4 rounded-lg font-bold text-lg hover:bg-gray-800 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors mt-4"
+              >
+                {loading ? 'Requesting...' : 'Request UberX'}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Map Area */}
+      <div className="flex-1 relative h-[50vh] md:h-full">
+        {/* Floating Mode Indicator */}
+        {!assignedDriver && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-white px-4 py-2 rounded-full shadow-lg font-medium text-sm flex items-center gap-2">
+            <span>{selectionMode === 'pickup' ? '📍 Set Pickup' : '🏁 Set Dropoff'}</span>
+            <span className="text-gray-400">|</span>
+            <span className="text-gray-500">Click on map</span>
           </div>
         )}
+
+        <MapView
+          center={mapCenter}
+          zoom={14}
+          onLocationSelect={!assignedDriver ? handleLocationSelect : undefined}
+          pickupMarker={pickupLocation}
+          dropoffMarker={dropoffLocation}
+          drivers={drivers}
+        />
       </div>
     </div>
   );

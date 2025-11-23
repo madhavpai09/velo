@@ -1,6 +1,16 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --uber-black: #000000;
+  --uber-white: #FFFFFF;
+  --uber-gray: #F6F6F6;
+  --uber-blue: #276EF1;
+  --uber-text: #333333;
+}
 
 * {
   margin: 0;
@@ -9,11 +19,13 @@
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  color: var(--uber-text);
+  background-color: var(--uber-white);
 }
 
 #root {
@@ -30,4 +42,31 @@ body {
 
 .leaflet-popup-content-wrapper {
   border-radius: 8px;
+}
+
+/* Uber-like Utility Classes */
+.btn-primary {
+  background-color: var(--uber-black);
+  color: var(--uber-white);
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.btn-primary:hover {
+  background-color: #333333;
+}
+
+.input-field {
+  background-color: var(--uber-gray);
+  border: none;
+  padding: 12px 16px;
+  border-radius: 8px;
+  width: 100%;
+  font-size: 16px;
+}
+
+.input-field:focus {
+  outline: 2px solid var(--uber-black);
 }

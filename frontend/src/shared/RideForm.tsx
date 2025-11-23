@@ -176,7 +176,7 @@ export default function RideForm({
 
           <div className="bg-blue-50 rounded-lg p-4">
             <div className="flex items-center justify-between">
-              <span className="text-sm font-semibold text-gray-700">Available Drivers</span>
+              <span className="text-sm font-semibold text-gray-700">Available Captains</span>
               <span className="text-2xl font-bold text-blue-600">{drivers.length}</span>
             </div>
           </div>
@@ -186,7 +186,7 @@ export default function RideForm({
             disabled={!pickupLocation || !dropoffLocation || loading}
             className="w-full bg-blue-600 text-white px-6 py-4 rounded-lg font-semibold text-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
           >
-            {loading ? 'Creating Ride...' : '🚗 Request Ride'}
+            {loading ? 'Creating Ride...' : '🛺 Request Ride'}
           </button>
 
           {(!pickupLocation || !dropoffLocation) && (
