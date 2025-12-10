@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import MapView from '../shared/MapView';
 import {
   createRideRequest,
   getAvailableDrivers,
+  rateDriver,
   DriverForMap
 } from '../utils/api';
 
@@ -20,6 +21,7 @@ interface AssignedDriver {
 
 export default function Ride() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [pickupLocation, setPickupLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [dropoffLocation, setDropoffLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [drivers, setDrivers] = useState<DriverForMap[]>([]);
@@ -30,6 +32,18 @@ export default function Ride() {
   const [waitingForDriver, setWaitingForDriver] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
   const [showUserIdInput, setShowUserIdInput] = useState(true);
+  const [selectedRideType, setSelectedRideType] = useState<'auto' | 'school_pool' | 'school_priority'>('auto');
+  const [showRatingModal, setShowRatingModal] = useState(false);
+  const [rating, setRating] = useState(0);
+  const [ratingComment, setRatingComment] = useState('');
+  const [lastCompletedRide, setLastCompletedRide] = useState<{ id: number, driverId: number } | null>(null);
+
+  useEffect(() => {
+    const type = searchParams.get('type');
+    if (type === 'school_priority') {
+      setSelectedRideType('school_priority');
+    }
+  }, [searchParams]);
 
   // Default center (Bangalore)
   const mapCenter: [number, number] = [12.9716, 77.5946];
@@ -69,7 +83,17 @@ export default function Ride() {
               if (data.ride_id) {
                 setRideId(data.ride_id);
               }
+            } else if (data.status === 'completed' && assignedDriver) {
+              // Ride just completed
+              setLastCompletedRide({ id: assignedDriver.ride_id!, driverId: assignedDriver.driver_id });
+              setAssignedDriver(null);
+              setShowRatingModal(true);
             }
+          } else if (assignedDriver && assignedDriver.status === 'in_progress') {
+            // Handle case where has_ride becomes false but we were in progress (completed)
+            setLastCompletedRide({ id: assignedDriver.ride_id!, driverId: assignedDriver.driver_id });
+            setAssignedDriver(null);
+            setShowRatingModal(true);
           }
         }
       } catch (error) {
@@ -94,6 +118,19 @@ export default function Ride() {
     }
   };
 
+  const calculateFare = (rideType: 'auto' | 'school_pool' | 'school_priority'): number => {
+    switch (rideType) {
+      case 'auto':
+        return 100;
+      case 'school_pool':
+        return 150;
+      case 'school_priority':
+        return 250;
+      default:
+        return 100;
+    }
+  };
+
   const handleRequestRide = async () => {
     if (!pickupLocation || !dropoffLocation) {
       alert('Please select both pickup and dropoff locations');
@@ -102,10 +139,13 @@ export default function Ride() {
 
     setLoading(true);
     try {
+      const fare = calculateFare(selectedRideType);
       const response = await createRideRequest(
         pickupLocation,
         dropoffLocation,
-        userId || 7000
+        userId || 7000,
+        selectedRideType,
+        fare
       );
 
       setRideId(response.data.id);
@@ -159,6 +199,64 @@ export default function Ride() {
             className="w-full bg-gradient-to-r from-blue-600 to-purple-600 text-white py-4 rounded-xl font-medium text-lg hover:shadow-lg hover:scale-[1.02] transition-all duration-200"
           >
             Continue
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (showRatingModal) {
+    return (
+      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl animate-scale-in">
+          <div className="text-center mb-6">
+            <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <span className="text-4xl">✅</span>
+            </div>
+            <h2 className="text-2xl font-bold mb-2">Ride Completed!</h2>
+            <p className="text-gray-600">How was your ride with Driver {lastCompletedRide?.driverId}?</p>
+          </div>
+
+          <div className="flex justify-center gap-2 mb-8">
+            {[1, 2, 3, 4, 5].map((star) => (
+              <button
+                key={star}
+                onClick={() => setRating(star)}
+                className={`text-4xl transition-transform hover:scale-110 ${rating >= star ? 'grayscale-0' : 'grayscale opacity-30'}`}
+              >
+                ⭐
+              </button>
+            ))}
+          </div>
+
+          <textarea
+            value={ratingComment}
+            onChange={(e) => setRatingComment(e.target.value)}
+            placeholder="Add a comment (optional)..."
+            className="w-full bg-gray-50 p-4 rounded-xl mb-6 text-sm focus:outline-none focus:ring-2 focus:ring-black/5 resize-none h-32"
+          />
+
+          <button
+            onClick={async () => {
+              if (rating === 0) {
+                alert('Please select a rating');
+                return;
+              }
+              try {
+                await rateDriver(lastCompletedRide!.driverId, userId!, lastCompletedRide!.id, rating, ratingComment);
+                setShowRatingModal(false);
+                setRating(0);
+                setRatingComment('');
+                setLastCompletedRide(null);
+                handleNewRide();
+              } catch (error) {
+                console.error('Failed to submit rating:', error);
+                alert('Failed to submit rating');
+              }
+            }}
+            className="w-full bg-black text-white py-4 rounded-xl font-bold text-lg hover:bg-gray-800 transition-colors"
+          >
+            Submit Rating
           </button>
         </div>
       </div>
@@ -274,7 +372,10 @@ export default function Ride() {
                 <div className="space-y-3 pt-4">
                   <h3 className="font-medium text-gray-500 mb-2">Suggested Rides</h3>
 
-                  <div className="flex items-center justify-between p-4 border-2 border-black rounded-xl bg-white cursor-pointer hover:bg-gray-50 transition-colors">
+                  <div
+                    className={`flex items-center justify-between p-4 border-2 rounded-xl cursor-pointer transition-colors ${selectedRideType === 'auto' ? 'border-black bg-gray-50' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
+                    onClick={() => setSelectedRideType('auto')}
+                  >
                     <div className="flex items-center gap-4">
                       <div className="w-16"><img src="https://www.uber-assets.com/image/upload/f_auto,q_auto:eco,c_fill,w_188,h_188/v1548646935/assets/64/93c255-87c8-4e2e-9429-cf709bf1b838/original/3.png" alt="UberX" /></div>
                       <div>
@@ -283,6 +384,34 @@ export default function Ride() {
                       </div>
                     </div>
                     <div className="font-bold text-lg">₹100</div>
+                  </div>
+
+                  <div
+                    className={`flex items-center justify-between p-4 border-2 rounded-xl cursor-pointer transition-colors ${selectedRideType === 'school_pool' ? 'border-yellow-500 bg-yellow-50' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
+                    onClick={() => setSelectedRideType('school_pool')}
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="w-16 flex items-center justify-center text-4xl">🎒</div>
+                      <div>
+                        <div className="font-bold text-lg flex items-center gap-2">Priority Rides <span className="px-2 py-0.5 bg-yellow-100 text-yellow-800 text-xs rounded-full">Priority</span></div>
+                        <div className="text-sm text-gray-500">Priority pickup for urgent rides</div>
+                      </div>
+                    </div>
+                    <div className="font-bold text-lg">₹150</div>
+                  </div>
+
+                  <div
+                    className={`flex items-center justify-between p-4 border-2 rounded-xl cursor-pointer transition-colors ${selectedRideType === 'school_priority' ? 'border-red-500 bg-red-50' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
+                    onClick={() => setSelectedRideType('school_priority')}
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="w-16 flex items-center justify-center text-4xl">🚨</div>
+                      <div>
+                        <div className="font-bold text-lg flex items-center gap-2">School Ride <span className="px-2 py-0.5 bg-red-100 text-red-800 text-xs rounded-full">Safe Driver</span></div>
+                        <div className="text-sm text-gray-500">Verified safe driver • Immediate pickup</div>
+                      </div>
+                    </div>
+                    <div className="font-bold text-lg">₹250</div>
                   </div>
 
                   <div className="flex items-center justify-between p-4 border border-gray-200 rounded-xl bg-white cursor-pointer hover:bg-gray-50 transition-colors opacity-60">
@@ -303,7 +432,7 @@ export default function Ride() {
                 disabled={!pickupLocation || !dropoffLocation || loading}
                 className="w-full bg-black text-white py-4 rounded-lg font-bold text-lg hover:bg-gray-800 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors mt-4"
               >
-                {loading ? 'Requesting...' : 'Request UberX'}
+                {loading ? 'Requesting...' : 'Request velo'}
               </button>
             </div>
           )}
@@ -330,6 +459,6 @@ export default function Ride() {
           drivers={drivers}
         />
       </div>
-    </div>
+    </div >
   );
 }

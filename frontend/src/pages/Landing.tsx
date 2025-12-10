@@ -15,6 +15,7 @@ export default function Landing() {
             <button onClick={() => navigate('/ride')} className="hover:text-gray-300">Ride</button>
             <button onClick={() => navigate('/driver')} className="hover:text-gray-300">Drive</button>
             <button className="hover:text-gray-300">Business</button>
+            <button onClick={() => navigate('/admin')} className="hover:text-gray-300">Admin</button>
             <button className="hover:text-gray-300">About</button>
           </nav>
         </div>
@@ -90,6 +91,38 @@ export default function Landing() {
                       Schedule for later
                     </button>
                   </div>
+
+                  {/* School Pool Promo */}
+                  <div
+                    onClick={() => setActiveTab('school')}
+                    className="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-xl cursor-pointer hover:bg-yellow-100 transition-colors flex items-center gap-4"
+                  >
+                    <div className="text-4xl">🎒</div>
+                    <div>
+                      <div className="font-bold text-lg">School Pool Pass</div>
+                      <div className="text-sm text-gray-600">Safe, priority rides for students. Get started →</div>
+                    </div>
+                  </div>
+                </div>
+              ) : activeTab === 'school' ? (
+                <div className="space-y-6">
+                  <h1 className="text-4xl md:text-5xl font-bold leading-tight mb-4">
+                    School Pool Pass
+                  </h1>
+                  <p className="text-gray-600 text-lg">
+                    Safe, reliable, and priority rides for your children.
+                  </p>
+                  <div className="flex gap-4">
+                    <button
+                      onClick={() => navigate('/school-pool')}
+                      className="bg-black text-white font-medium py-3 px-6 rounded-lg text-lg hover:bg-gray-800 transition-colors"
+                    >
+                      Get Started
+                    </button>
+                  </div>
+                  <div className="pt-4 border-t border-gray-100 mt-4">
+                    <p className="text-sm text-gray-500">Includes verified safe drivers and real-time tracking.</p>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-6">
@@ -138,7 +171,7 @@ export default function Landing() {
             <ul className="space-y-2 text-gray-400 text-sm">
               <li><button onClick={() => navigate('/ride')} className="hover:text-white">Ride</button></li>
               <li><button onClick={() => navigate('/driver')} className="hover:text-white">Drive</button></li>
-              <li><a href="#" className="hover:text-white">School pool pass</a></li>
+              <li><button onClick={() => navigate('/school-pool')} className="hover:text-white">School pool pass</button></li>
               <li><a href="#" className="hover:text-white">Velo for Business</a></li>
             </ul>
           </div>
@@ -162,7 +195,7 @@ export default function Landing() {
             <a href="#" className="hover:text-white">Terms</a>
           </div>
         </div>
-      </footer>
-    </div>
+      </footer >
+    </div >
   );
 }

@@ -2,10 +2,10 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import MapView from '../shared/MapView';
 import RideForm from '../shared/RideForm';
-import { 
-  createRideRequest, 
+import {
+  createRideRequest,
   getAvailableDrivers,
-  DriverForMap 
+  DriverForMap
 } from '../utils/api';
 
 interface AssignedDriver {
@@ -16,6 +16,7 @@ interface AssignedDriver {
   pickup_location: string;
   dropoff_location: string;
   status?: string;
+  otp?: string;
 }
 
 export default function Home() {
@@ -28,6 +29,7 @@ export default function Home() {
   const [selectionMode, setSelectionMode] = useState<'pickup' | 'dropoff'>('pickup');
   const [assignedDriver, setAssignedDriver] = useState<AssignedDriver | null>(null);
   const [waitingForDriver, setWaitingForDriver] = useState(false);
+  const [activeSubscription, setActiveSubscription] = useState<any>(null);
   const [isUserOnline, setIsUserOnline] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
   const [showUserIdInput, setShowUserIdInput] = useState(true);
@@ -35,7 +37,12 @@ export default function Home() {
   const mapCenter: [number, number] = [12.9716, 77.5946];
 
   useEffect(() => {
-    setIsUserOnline(true);
+    // Auto-generate User ID if not set
+    if (!userId) {
+      const randomId = Math.floor(Math.random() * 9000) + 1000;
+      setUserId(randomId);
+      setIsUserOnline(true);
+    }
     return () => {
       setIsUserOnline(false);
     };
@@ -55,10 +62,11 @@ export default function Home() {
         const response = await fetch(`http://localhost:8000/api/user/${userId}/ride-status`);
         if (response.ok) {
           const data = await response.json();
-          
+          console.log('🚗 Poll Data:', data); // DEBUG LOG
+
           if (data.has_ride) {
             setWaitingForDriver(false);
-            
+
             if (data.status === 'matched' || data.status === 'accepted' || data.status === 'in_progress') {
               setAssignedDriver({
                 ride_id: data.ride_id,
@@ -67,12 +75,24 @@ export default function Home() {
                 driver_location: data.driver_location || 'Unknown',
                 pickup_location: data.pickup_location,
                 dropoff_location: data.dropoff_location,
-                status: data.status
+                status: data.status,
+                otp: data.otp
               });
-              
+
               if (data.ride_id) {
                 setRideId(data.ride_id);
               }
+            } else if (data.status === 'completed') {
+              // Ride finished, clear state
+              setAssignedDriver(null);
+              setRideId(null);
+              alert("Ride Completed! 🏁");
+            }
+          } else {
+            // No active ride found
+            if (assignedDriver) {
+              setAssignedDriver(null);
+              setRideId(null);
             }
           }
         }
@@ -83,6 +103,24 @@ export default function Home() {
 
     return () => clearInterval(pollInterval);
   }, [userId, isUserOnline]);
+
+  // NEW: Fetch active subscription
+  useEffect(() => {
+    if (userId) {
+      console.log('Fetching subscriptions for user:', userId);
+      fetch(`http://localhost:8000/api/user/${userId}/subscriptions`)
+        .then(res => res.json())
+        .then(data => {
+          console.log('Subscription data:', data);
+          if (data.subscriptions && data.subscriptions.length > 0) {
+            const active = data.subscriptions.find((s: any) => s.status === 'active');
+            console.log('Active subscription:', active);
+            if (active) setActiveSubscription(active);
+          }
+        })
+        .catch(err => console.error("Failed to fetch subs", err));
+    }
+  }, [userId]);
 
   const fetchDrivers = async () => {
     const driverData = await getAvailableDrivers();
@@ -152,12 +190,6 @@ export default function Home() {
                 </div>
               )}
               <button
-                onClick={() => navigate('/ride')}
-                className="bg-white text-blue-600 px-4 py-2 rounded-lg font-semibold hover:bg-blue-50 transition-colors"
-              >
-                View Rides
-              </button>
-              <button
                 onClick={() => navigate('/')}
                 className="bg-white/20 text-white px-4 py-2 rounded-lg font-semibold hover:bg-white/30 transition-colors"
               >
@@ -170,6 +202,56 @@ export default function Home() {
 
       <div className="flex-1 flex overflow-hidden">
         <div className="w-96">
+          {/* Services Grid */}
+          <div className="grid grid-cols-2 gap-4 px-6 mb-8">
+            {activeSubscription && (
+              <div className="col-span-2 bg-green-50 border border-green-200 p-4 rounded-xl flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-bold text-green-800 uppercase mb-1">Active Subscription</div>
+                  <div className="font-bold">{activeSubscription.student_name}'s Ride</div>
+                  <div className="text-sm text-gray-600">Driver ID: {activeSubscription.driver_id || 'Pending'}</div>
+                  {activeSubscription.otp && (
+                    <div className="mt-2 bg-white px-2 py-1 rounded border border-green-200 inline-block">
+                      <span className="text-xs text-gray-500 mr-2">OTP:</span>
+                      <span className="font-mono font-bold text-lg tracking-widest">{activeSubscription.otp}</span>
+                    </div>
+                  )}
+                </div>
+                <div className="text-2xl">🚌</div>
+              </div>
+            )}
+
+            <div
+              onClick={() => navigate('/ride')}
+              className="bg-gray-100 p-4 rounded-xl aspect-square flex flex-col justify-between cursor-pointer hover:bg-gray-200 transition-colors"
+            >
+              <div className="self-end w-16">
+                <img src="https://www.uber-assets.com/image/upload/f_auto,q_auto:eco,c_fill,w_188,h_188/v1548646935/assets/64/93c255-87c8-4e2e-9429-cf709bf1b838/original/3.png" alt="Ride" />
+              </div>
+              <span className="font-medium text-lg">Ride</span>
+            </div>
+
+            <div
+              onClick={() => navigate('/school-pool')}
+              className="bg-yellow-100 p-4 rounded-xl aspect-square flex flex-col justify-between cursor-pointer hover:bg-yellow-200 transition-colors border-2 border-transparent hover:border-yellow-400"
+            >
+              <div className="self-end w-16 text-4xl flex justify-end">
+                🎒
+              </div>
+              <div>
+                <span className="font-bold text-lg block">School Pool</span>
+                <span className="text-xs text-yellow-800">For Students</span>
+              </div>
+            </div>
+
+            <div className="bg-gray-100 p-4 rounded-xl aspect-square flex flex-col justify-between opacity-50">
+              <div className="self-end w-16">
+                {/* Placeholder for future service icon */}
+              </div>
+              <span className="font-medium text-lg">More Services</span>
+            </div>
+          </div>
+
           {showUserIdInput && (
             <div className="bg-white border-b p-4 shadow-sm">
               <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -198,7 +280,7 @@ export default function Home() {
                 </button>
               </div>
               <p className="text-xs text-gray-500 mt-2">
-                Each user needs a unique ID (e.g., 6000, 7000, 8000)
+                Auto-generated ID: {userId}. You can change it if needed.
               </p>
             </div>
           )}
@@ -242,9 +324,8 @@ export default function Home() {
           {!assignedDriver && (
             <div className="absolute top-4 left-4 z-[1000] bg-white rounded-lg shadow-lg p-3">
               <div className="text-xs text-gray-600 mb-1">Click mode:</div>
-              <div className={`font-bold text-lg ${
-                selectionMode === 'pickup' ? 'text-green-600' : 'text-red-600'
-              }`}>
+              <div className={`font-bold text-lg ${selectionMode === 'pickup' ? 'text-green-600' : 'text-red-600'
+                }`}>
                 {selectionMode === 'pickup' ? '📍 Pickup' : '🎯 Dropoff'}
               </div>
             </div>
@@ -265,6 +346,14 @@ export default function Home() {
                   {assignedDriver.status && (
                     <div className="text-xs text-gray-500 mt-2">
                       Status: {assignedDriver.status}
+                    </div>
+                  )}
+                  {assignedDriver.otp && (
+                    <div className="mt-4 p-3 bg-yellow-100 rounded-lg border border-yellow-300">
+                      <div className="text-xs text-yellow-800 uppercase font-bold">Share OTP with Driver</div>
+                      <div className="text-3xl font-mono font-bold tracking-widest text-center mt-1">
+                        {assignedDriver.otp}
+                      </div>
                     </div>
                   )}
                 </div>

@@ -6,11 +6,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Database configuration
 DATABASE_URL = os.getenv(
     "DATABASE_URL", 
     "postgresql://Mini_Uber_user:password@localhost/Mini_Uber"
 )
+# DATABASE_URL = "sqlite:///./mini_uber.db"
 
 # Create engine with error handling
 try:

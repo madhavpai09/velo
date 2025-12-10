@@ -5,7 +5,18 @@ import requests
 import sys
 from datetime import datetime
 import os
+import math
+import logging
 from contextlib import asynccontextmanager
+
+# Configure logging
+logging.basicConfig(
+    filename='matcher.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    force=True
+)
+logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -73,44 +84,107 @@ def is_driver_online(driver_id: int, db=None) -> bool:
         print(f"   ⚠️  Driver {driver_id} port check failed: {e}")
         return False
 
+def calculate_distance(loc1_str: str, loc2_str: str) -> float:
+    """Calculate Haversine distance between two 'lat,lng' strings"""
+    try:
+        lat1, lng1 = map(float, loc1_str.split(','))
+        lat2, lng2 = map(float, loc2_str.split(','))
+        
+        R = 6371  # Earth radius in km
+        dlat = math.radians(lat2 - lat1)
+        dlng = math.radians(lng2 - lng1)
+        a = math.sin(dlat/2) * math.sin(dlat/2) + \
+            math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * \
+            math.sin(dlng/2) * math.sin(dlng/2)
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+        return R * c
+    except:
+        return float('inf')
+
 # Background task to check for matches every 5 seconds
 async def matcher_loop():
     """Background task that wakes every 5s and matches rides"""
     while True:
         try:
             await asyncio.sleep(5)
+            logger.info("🔍 Auto-checking for pending rides...")
             print("🔍 Auto-checking for pending rides...")
             
             # Get database session
             db = SessionLocal()
             try:
-                # Find pending ride
-                ride = db.query(RideRequest).filter(RideRequest.status == "pending").first()
+                # Find pending ride - PRIORITIZE school_pool
+                # First check for school_pool rides
+                ride = db.query(RideRequest).filter(
+                    RideRequest.status == "pending",
+                    RideRequest.ride_type == "school_pool"
+                ).first()
+                
+                # If no school pool ride, check for any pending ride
+                if not ride:
+                    ride = db.query(RideRequest).filter(RideRequest.status == "pending").first()
                 
                 if not ride:
                     print("   ℹ️  No pending rides")
                     db.close()
                     continue
                 
-                print(f"   📍 Found pending ride from user {ride.user_id}")
+                logger.info(f"   📍 Found pending ride {ride.id} from user {ride.user_id}")
+                print(f"   📍 Found pending ride {ride.id} from user {ride.user_id}")
                 
                 # Find available drivers (from database)
                 available_drivers = db.query(DriverInfo).filter(
                     DriverInfo.available == True
                 ).all()
+                logger.info(f"   Query returned {len(available_drivers)} available drivers")
+                
+                # NEW: Filter for Safe Drivers if School Priority
+                if ride.ride_type == "school_priority":
+                    print(f"   🎓 School Priority Ride! Filtering for safe drivers...")
+                    available_drivers = [d for d in available_drivers if d.is_verified_safe]
+                    if not available_drivers:
+                        logger.info("   ⚠️  No SAFE drivers available for school ride")
+                        print("   ⚠️  No SAFE drivers available for school ride")
+                        db.close()
+                        continue
                 
                 if not available_drivers:
+                    logger.info("   ℹ️  No available drivers in database")
                     print("   ℹ️  No available drivers in database")
                     db.close()
                     continue
                 
-                print(f"   👥 Found {len(available_drivers)} driver(s) in database, checking if online...")
+                # Get list of drivers who already declined this ride
+                declined_matches = db.query(MatchedRide).filter(
+                    MatchedRide.ride_id == ride.id,
+                    MatchedRide.status == "declined"
+                ).all()
+                declined_driver_ids = {m.driver_id for m in declined_matches}
                 
-                # Check each driver to see if they're actually online
-                # For web drivers, we trust the database availability flag
+                # Filter out declined drivers
+                candidates = [d for d in available_drivers if d.driver_id not in declined_driver_ids]
+                
+                if not candidates:
+                    logger.info(f"   ℹ️  All available drivers have declined ride {ride.id}")
+                    print(f"   ℹ️  All available drivers have declined ride {ride.id}")
+                    db.close()
+                    continue
+
+                print(f"   👥 Found {len(candidates)} candidate driver(s) (excluding {len(declined_driver_ids)} declined)")
+                
+                # Calculate distances and sort
+                driver_distances = []
+                for driver in candidates:
+                    dist = calculate_distance(ride.source_location, driver.current_location)
+                    driver_distances.append((driver, dist))
+                
+                # Sort by distance (nearest first)
+                driver_distances.sort(key=lambda x: x[1])
+                
+                # Check drivers in order of proximity
                 online_driver = None
-                for driver in available_drivers:
-                    print(f"   🔌 Checking driver {driver.driver_id}...")
+                for driver, dist in driver_distances:
+                    print(f"   🔌 Checking driver {driver.driver_id} ({dist:.2f} km away)...")
                     if is_driver_online(driver.driver_id, db=db):
                         online_driver = driver
                         print(f"   ✅ Driver {driver.driver_id} is ONLINE and available!")
@@ -124,6 +198,7 @@ async def matcher_loop():
                         break
                 
                 if not online_driver:
+                    logger.info("   ℹ️  No online drivers found")
                     print("   ℹ️  No online drivers found")
                     db.close()
                     continue
@@ -134,6 +209,7 @@ async def matcher_loop():
                 print(f"   Driver ID: {online_driver.driver_id}")
                 print(f"   From: {ride.source_location}")
                 print(f"   To: {ride.dest_location}")
+                print(f"   Type: {ride.ride_type}")
 
                 # Update statuses
                 ride.status = "broadcasting"
@@ -151,14 +227,17 @@ async def matcher_loop():
                 db.add(matched)
                 db.commit()
                 
+                logger.info(f"   ✅ Ride offered to driver {online_driver.driver_id} (Match ID: {matched.id})")
                 print(f"   ✅ Ride offered to driver {online_driver.driver_id} (Match ID: {matched.id})")
                     
             finally:
                 db.close()
                 
         except Exception as e:
-            print(f"   ⚠️  Matcher loop error: {e}")
+            logger.error(f"   ⚠️  Matcher loop error: {e}")
             import traceback
+            logger.error(traceback.format_exc())
+            print(f"   ⚠️  Matcher loop error: {e}")
             traceback.print_exc()
 
 

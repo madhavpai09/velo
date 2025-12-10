@@ -4,13 +4,39 @@ import random
 from datetime import datetime
 from pydantic import BaseModel
 import sys
+import sys
 import os
 
 sys.path.insert(0, os.path.dirname(__file__))
 from sqlalchemy.orm import Session
 from database.connections import SessionLocal, engine
-from database.models import Base, RideRequest, DriverInfo, MatchedRide
+from database.models import Base, RideRequest, DriverInfo, MatchedRide, StudentProfile, Subscription, SubscriptionSchedule, DriverRating
 from models.schemas import RideCreate, DriverCreate, UpdateMatchPayload
+
+# NEW: Schemas for School Pool
+class StudentCreate(BaseModel):
+    user_id: int
+    name: str
+    school_name: str
+    school_address: str
+    home_address: str
+    grade: str
+
+class SubscriptionCreate(BaseModel):
+    user_id: int
+    student_id: int
+    start_date: str  # ISO format
+    end_date: str    # ISO format
+    days: list[str]  # ["monday", "wednesday"]
+    pickup_time: str # "08:00"
+    drop_time: str   # "15:00"
+
+class RatingCreate(BaseModel):
+    driver_id: int
+    user_id: int
+    ride_id: int
+    rating: int
+    comment: str = None
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -41,6 +67,12 @@ class DriverRegister(BaseModel):
     name: str
     port: int
     location: dict
+    vehicle_type: str = "auto"
+    phone_number: str = None
+    vehicle_details: str = None
+
+class DriverLogin(BaseModel):
+    driver_id: int
 
 @app.get("/")
 def read_root():
@@ -65,12 +97,18 @@ def register_driver(driver: DriverRegister, db: Session = Depends(get_db)):
         if existing:
             existing.available = True
             existing.current_location = location_str
+            existing.vehicle_type = driver.vehicle_type
+            existing.phone_number = driver.phone_number
+            existing.vehicle_details = driver.vehicle_details
             print(f"✅ Updated driver {numeric_id}")
         else:
             new_driver = DriverInfo(
                 driver_id=numeric_id,
                 available=True,
-                current_location=location_str
+                current_location=location_str,
+                vehicle_type=driver.vehicle_type,
+                phone_number=driver.phone_number,
+                vehicle_details=driver.vehicle_details
             )
             db.add(new_driver)
             print(f"✅ Created driver {numeric_id}")
@@ -81,12 +119,29 @@ def register_driver(driver: DriverRegister, db: Session = Depends(get_db)):
             "message": "Driver registered successfully",
             "driver_id": f"DRIVER-{numeric_id}",
             "numeric_id": numeric_id,
-            "status": "available",
-            "location": location_str
+            "vehicle_type": driver.vehicle_type
         }
     except Exception as e:
+        with open("error.log", "a") as f:
+            f.write(f"Registration error: {str(e)}\n")
         print(f"❌ Registration error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/driver/login")
+def login_driver(login: DriverLogin, db: Session = Depends(get_db)):
+    driver = db.query(DriverInfo).filter(DriverInfo.driver_id == login.driver_id).first()
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+    
+    return {
+        "message": "Login successful",
+        "driver_id": f"DRIVER-{driver.driver_id}",
+        "numeric_id": driver.driver_id,
+        "name": f"Driver {driver.driver_id}", # Mock name
+        "vehicle_type": driver.vehicle_type,
+        "phone_number": driver.phone_number,
+        "vehicle_details": driver.vehicle_details
+    }
 
 @app.post("/driver/heartbeat")
 def driver_heartbeat(driver_id: str, db: Session = Depends(get_db)):
@@ -145,7 +200,9 @@ def create_ride_request(request: dict, db: Session = Depends(get_db)):
             user_id=user_id,
             source_location=source,
             dest_location=dest,
-            status="pending"
+            status="pending",
+            ride_type=request.get('ride_type', 'auto'),  # NEW: Handle ride type
+            fare=request.get('fare')  # NEW: Store fare amount
         )
         db.add(new)
         db.commit()
@@ -179,7 +236,8 @@ def get_available_drivers(db: Session = Depends(get_db)):
             {
                 "driver_id": d.driver_id,
                 "location": d.current_location,
-                "available": d.available
+                "available": d.available,
+                "rating": float(d.rating) if d.rating else 5.0
             }
             for d in drivers
         ]
@@ -238,7 +296,9 @@ def get_driver_pending_ride(driver_id: int, db: Session = Depends(get_db)):
         "user_id": ride.user_id,
         "pickup_location": ride.source_location,
         "dropoff_location": ride.dest_location,
-        "status": "offered"
+        "status": "offered",
+        "ride_type": ride.ride_type,  # NEW: Return ride type
+        "fare": ride.fare  # NEW: Return fare amount
     }
 
 @app.post("/api/driver/{driver_id}/accept-ride/{match_id}")
@@ -252,17 +312,47 @@ def accept_ride(driver_id: int, match_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Ride not found")
         
     otp = str(random.randint(1000, 9999))
-    match.status = "accepted"
-    match.otp = otp
-    ride.status = "matched"
+    
+    # Explicit update to ensure persistence
+    rows_match = db.query(MatchedRide).filter(MatchedRide.id == match_id).update({
+        "status": "accepted",
+        "otp": otp
+    })
+    
+    rows_ride = db.query(RideRequest).filter(RideRequest.id == match.ride_id).update({
+        "status": "matched"
+    })
     
     driver = db.query(DriverInfo).filter(DriverInfo.driver_id == driver_id).first()
     if driver:
         driver.available = False
         
     db.commit()
-    print(f"✅ Driver {driver_id} ACCEPTED ride {ride.id}. OTP: {otp}")
+    
+    # Re-fetch to confirm
+    updated_ride = db.query(RideRequest).filter(RideRequest.id == match.ride_id).first()
+    print(f"✅ Driver {driver_id} ACCEPTED ride {updated_ride.id}. Status: {updated_ride.status}. OTP: {otp}")
     return {"status": "accepted", "otp": otp}
+
+@app.post("/api/driver/{driver_id}/decline-ride/{match_id}")
+def decline_ride(driver_id: int, match_id: int, db: Session = Depends(get_db)):
+    match = db.query(MatchedRide).filter(MatchedRide.id == match_id).first()
+    if not match or match.driver_id != driver_id:
+        raise HTTPException(status_code=404, detail="Match not found")
+        
+    # Update match status to declined
+    db.query(MatchedRide).filter(MatchedRide.id == match_id).update({
+        "status": "declined"
+    })
+    
+    # Reset ride status to pending so it can be matched again
+    db.query(RideRequest).filter(RideRequest.id == match.ride_id).update({
+        "status": "pending"
+    })
+    
+    db.commit()
+    print(f"❌ Driver {driver_id} DECLINED ride {match.ride_id}")
+    return {"status": "declined"}
 
 @app.post("/api/ride/{ride_id}/verify-otp")
 def verify_otp(ride_id: int, otp: str, db: Session = Depends(get_db)):
@@ -270,7 +360,11 @@ def verify_otp(ride_id: int, otp: str, db: Session = Depends(get_db)):
     if not ride:
         raise HTTPException(status_code=404, detail="Ride not found")
         
-    match = db.query(MatchedRide).filter(MatchedRide.ride_id == ride_id).first()
+    # Fix: Verify against the ACCEPTED match
+    match = db.query(MatchedRide).filter(
+        MatchedRide.ride_id == ride_id,
+        MatchedRide.status == "accepted"
+    ).first()
     if not match:
         raise HTTPException(status_code=404, detail="Match not found")
         
@@ -309,14 +403,19 @@ def get_driver_current_ride(driver_id: int, db: Session = Depends(get_db)):
 
 @app.get("/api/user/{user_id}/ride-status")
 def get_user_ride_status(user_id: int, db: Session = Depends(get_db)):
+    db.rollback() # Ensure fresh data
     ride = db.query(RideRequest).filter(
         RideRequest.user_id == user_id
     ).order_by(RideRequest.created_at.desc()).first()
     
-    if not ride:
+    if not ride or ride.status in ["completed", "cancelled"]:
         return {"has_ride": False}
         
-    match = db.query(MatchedRide).filter(MatchedRide.ride_id == ride.id).first()
+    # Fix: Get the LATEST match that is NOT declined
+    match = db.query(MatchedRide).filter(
+        MatchedRide.ride_id == ride.id,
+        MatchedRide.status != "declined"
+    ).order_by(MatchedRide.id.desc()).first()
     
     response = {
         "has_ride": True,
@@ -354,6 +453,662 @@ def complete_ride(driver_id: int, ride_id: int, db: Session = Depends(get_db)):
     db.commit()
     print(f"🏁 Ride {ride_id} COMPLETED")
     return {"status": "completed"}
+
+@app.post("/api/rate-driver")
+def rate_driver(rating: RatingCreate, db: Session = Depends(get_db)):
+    """Rate a driver after a ride"""
+    
+    # Check if rating already exists
+    existing = db.query(DriverRating).filter(
+        DriverRating.ride_id == rating.ride_id,
+        DriverRating.user_id == rating.user_id
+    ).first()
+    
+    if existing:
+        return {"message": "Rating already submitted"}
+        
+    # Create rating
+    new_rating = DriverRating(
+        driver_id=rating.driver_id,
+        user_id=rating.user_id,
+        ride_id=rating.ride_id,
+        rating=rating.rating,
+        comment=rating.comment
+    )
+    db.add(new_rating)
+    
+    # Update driver average rating
+    driver = db.query(DriverInfo).filter(DriverInfo.driver_id == rating.driver_id).first()
+    if driver:
+        # Calculate new average
+        # (old_avg * old_count + new_rating) / (old_count + 1)
+        current_rating = float(driver.rating) if driver.rating else 5.0
+        current_count = driver.rating_count if driver.rating_count else 0
+        
+        new_total = (current_rating * current_count) + rating.rating
+        new_count = current_count + 1
+        new_avg = new_total / new_count
+        
+        driver.rating = new_avg
+        driver.rating_count = new_count
+        
+    db.commit()
+    print(f"⭐ Driver {rating.driver_id} rated {rating.rating} stars by User {rating.user_id}")
+    
+    return {"message": "Rating submitted successfully"}
+
+# NEW: Student Profile APIs
+@app.post("/api/student/create")
+def create_student(student: StudentCreate, db: Session = Depends(get_db)):
+    new_student = StudentProfile(
+        user_id=student.user_id,
+        name=student.name,
+        school_name=student.school_name,
+        school_address=student.school_address,
+        home_address=student.home_address,
+        grade=student.grade
+    )
+    db.add(new_student)
+    db.commit()
+    db.refresh(new_student)
+    print(f"✅ Student profile created: {new_student.name}")
+    return {"message": "Student profile created", "id": new_student.id}
+
+@app.get("/api/user/{user_id}/students")
+def get_user_students(user_id: int, db: Session = Depends(get_db)):
+    students = db.query(StudentProfile).filter(StudentProfile.user_id == user_id).all()
+    return {"students": students}
+
+# NEW: Subscription APIs
+@app.post("/api/subscription/create")
+def create_subscription(sub: SubscriptionCreate, db: Session = Depends(get_db)):
+    # Find a safe driver
+    safe_driver = db.query(DriverInfo).filter(
+        DriverInfo.is_verified_safe == True,
+        DriverInfo.available == True
+    ).first()
+    
+    assigned_driver_id = safe_driver.driver_id if safe_driver else None
+    
+    # Create subscription
+    new_sub = Subscription(
+        user_id=sub.user_id,
+        student_id=sub.student_id,
+        driver_id=assigned_driver_id, # Assign driver
+        start_date=datetime.fromisoformat(sub.start_date.replace('Z', '+00:00')),
+        end_date=datetime.fromisoformat(sub.end_date.replace('Z', '+00:00')),
+        status="active"
+    )
+    db.add(new_sub)
+    db.commit()
+    db.refresh(new_sub)
+    
+    # Create schedules
+    for day in sub.days:
+        # Pickup schedule
+        pickup = SubscriptionSchedule(
+            subscription_id=new_sub.id,
+            day_of_week=day,
+            pickup_time=sub.pickup_time,
+            ride_type="pickup"
+        )
+        db.add(pickup)
+        
+        # Drop schedule
+        drop = SubscriptionSchedule(
+            subscription_id=new_sub.id,
+            day_of_week=day,
+            pickup_time=sub.drop_time,
+            ride_type="drop"
+        )
+        db.add(drop)
+    
+    db.commit()
+    print(f"✅ Subscription created for student {sub.student_id}. Driver: {assigned_driver_id}")
+    
+    return {
+        "message": "Subscription created", 
+        "id": new_sub.id,
+        "driver_id": assigned_driver_id,
+        "driver_name": f"Driver {assigned_driver_id}" if assigned_driver_id else "Pending Assignment"
+    }
+
+# OLD ENDPOINT - REPLACED BY SCHOOL POOL PASS VERSION BELOW
+# @app.get("/api/user/{user_id}/subscriptions")
+# def get_user_subscriptions_old(user_id: int, db: Session = Depends(get_db)):
+#     subs = db.query(Subscription).filter(Subscription.user_id == user_id).all()
+#     result = []
+#     for sub in subs:
+#         student = db.query(StudentProfile).filter(StudentProfile.id == sub.student_id).first()
+#         schedules = db.query(SubscriptionSchedule).filter(SubscriptionSchedule.subscription_id == sub.id).all()
+#         result.append({
+#             "id": sub.id,
+#             "student_name": student.name if student else "Unknown",
+#             "status": sub.status,
+#             "driver_id": sub.driver_id,
+#             "schedules": schedules
+#         })
+#     return {"subscriptions": result}
+
+# ==================== SCHOOL POOL PASS APIs ====================
+
+from database.models import School, SchoolRoute, RouteStop, SchoolPassSubscription, PickupEvent, DriverRouteAssignment
+
+# Pydantic schemas for School Pool Pass
+class SchoolPassSubscriptionCreate(BaseModel):
+    user_id: int
+    student_id: int
+    route_id: int
+    stop_id: int
+    subscription_type: str  # monthly, quarterly, annual
+    start_date: str  # YYYY-MM-DD
+
+@app.get("/api/schools")
+def get_schools(db: Session = Depends(get_db)):
+    """Get all verified schools"""
+    schools = db.query(School).filter(School.verified == True).all()
+    return {
+        "schools": [
+            {
+                "id": s.id,
+                "name": s.name,
+                "address": s.address,
+                "city": s.city,
+                "latitude": str(s.latitude) if s.latitude else None,
+                "longitude": str(s.longitude) if s.longitude else None
+            }
+            for s in schools
+        ]
+    }
+
+@app.get("/api/schools/{school_id}/routes")
+def get_school_routes(school_id: int, db: Session = Depends(get_db)):
+    """Get all routes for a school with stops"""
+    school = db.query(School).filter(School.id == school_id).first()
+    if not school:
+        raise HTTPException(status_code=404, detail="School not found")
+    
+    routes = db.query(SchoolRoute).filter(
+        SchoolRoute.school_id == school_id,
+        SchoolRoute.status == "active"
+    ).all()
+    
+    result = []
+    for route in routes:
+        stops = db.query(RouteStop).filter(
+            RouteStop.route_id == route.id
+        ).order_by(RouteStop.stop_order).all()
+        
+        result.append({
+            "id": route.id,
+            "name": route.route_name,
+            "type": route.route_type,
+            "start_time": route.start_time,
+            "capacity": route.max_capacity,
+            "available_seats": route.max_capacity - route.current_occupancy,
+            "stops": [
+                {
+                    "id": stop.id,
+                    "name": stop.stop_name,
+                    "address": stop.address,
+                    "latitude": str(stop.latitude),
+                    "longitude": str(stop.longitude),
+                    "eta_offset": stop.estimated_arrival_offset
+                }
+                for stop in stops
+            ]
+        })
+    
+    return {
+        "school": {
+            "id": school.id,
+            "name": school.name,
+            "address": school.address
+        },
+        "routes": result
+    }
+
+@app.post("/api/subscriptions/school-pass")
+def create_school_pass_subscription(sub: SchoolPassSubscriptionCreate, db: Session = Depends(get_db)):
+    """Create a new School Pool Pass subscription"""
+    
+    # Verify student exists
+    student = db.query(StudentProfile).filter(StudentProfile.id == sub.student_id).first()
+    if not student or student.user_id != sub.user_id:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    # Verify route exists and has capacity
+    route = db.query(SchoolRoute).filter(SchoolRoute.id == sub.route_id).first()
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+    
+    if route.current_occupancy >= route.max_capacity:
+        raise HTTPException(status_code=400, detail="Route is at full capacity")
+    
+    # Verify stop exists on route
+    stop = db.query(RouteStop).filter(
+        RouteStop.id == sub.stop_id,
+        RouteStop.route_id == sub.route_id
+    ).first()
+    if not stop:
+        raise HTTPException(status_code=404, detail="Stop not found on this route")
+    
+    # Calculate end date based on subscription type
+    from datetime import datetime, timedelta
+    start_date = datetime.strptime(sub.start_date, "%Y-%m-%d")
+    if sub.subscription_type == "monthly":
+        end_date = start_date + timedelta(days=30)
+        amount = 4500  # ₹150 per ride * 30 days
+    elif sub.subscription_type == "quarterly":
+        end_date = start_date + timedelta(days=90)
+        amount = 12000
+    else:  # annual
+        end_date = start_date + timedelta(days=365)
+        amount = 45000
+    
+    # Find available safe driver (simple assignment for now)
+    available_driver = db.query(DriverInfo).filter(
+        DriverInfo.is_verified_safe == True,
+        DriverInfo.available == True
+    ).first()
+    
+    # Create subscription
+    new_sub = SchoolPassSubscription(
+        user_id=sub.user_id,
+        student_id=sub.student_id,
+        route_id=sub.route_id,
+        stop_id=sub.stop_id,
+        assigned_driver_id=available_driver.driver_id if available_driver else None,
+        subscription_type=sub.subscription_type,
+        start_date=sub.start_date,
+        end_date=end_date.strftime("%Y-%m-%d"),
+        status="active",
+        payment_status="paid",
+        amount_paid=amount
+    )
+    db.add(new_sub)
+    
+    # Update route occupancy
+    route.current_occupancy += 1
+    
+    db.commit()
+    db.refresh(new_sub)
+    
+    print(f"✅ School Pass subscription created: {new_sub.id} for student {student.name}")
+    
+    return {
+        "subscription_id": new_sub.id,
+        "assigned_driver": {
+            "driver_id": available_driver.driver_id if available_driver else None,
+            "name": f"Driver {available_driver.driver_id}" if available_driver else "Pending",
+            "phone": available_driver.phone_number if available_driver else None,
+            "vehicle": available_driver.vehicle_details if available_driver else None
+        } if available_driver else None,
+        "route_details": {
+            "route_name": route.route_name,
+            "pickup_time": route.start_time,
+            "stop_address": stop.address
+        },
+        "amount": amount,
+        "status": "active"
+    }
+
+@app.get("/api/subscriptions/school-pass/{subscription_id}")
+def get_school_pass_subscription(subscription_id: int, db: Session = Depends(get_db)):
+    """Get School Pool Pass subscription details"""
+    sub = db.query(SchoolPassSubscription).filter(SchoolPassSubscription.id == subscription_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    
+    student = db.query(StudentProfile).filter(StudentProfile.id == sub.student_id).first()
+    route = db.query(SchoolRoute).filter(SchoolRoute.id == sub.route_id).first()
+    stop = db.query(RouteStop).filter(RouteStop.id == sub.stop_id).first()
+    driver = db.query(DriverInfo).filter(DriverInfo.driver_id == sub.assigned_driver_id).first() if sub.assigned_driver_id else None
+    
+    return {
+        "id": sub.id,
+        "student": {
+            "id": student.id,
+            "name": student.name,
+            "school": student.school_name
+        } if student else None,
+        "driver": {
+            "id": driver.driver_id,
+            "name": f"Driver {driver.driver_id}",
+            "phone": driver.phone_number
+        } if driver else None,
+        "route": {
+            "name": route.route_name,
+            "pickup_time": route.start_time,
+            "stop_address": stop.address
+        } if route and stop else None,
+        "status": sub.status,
+        "start_date": sub.start_date,
+        "end_date": sub.end_date
+    }
+
+@app.get("/api/user/{user_id}/subscriptions")
+def get_user_subscriptions(user_id: int, db: Session = Depends(get_db)):
+    """Get all subscriptions for a user with today's OTP"""
+    subscriptions = db.query(SchoolPassSubscription).filter(
+        SchoolPassSubscription.user_id == user_id,
+        SchoolPassSubscription.status == "active"
+    ).all()
+    
+    result = []
+    for sub in subscriptions:
+        student = db.query(StudentProfile).filter(StudentProfile.id == sub.student_id).first()
+        route = db.query(SchoolRoute).filter(SchoolRoute.id == sub.route_id).first()
+        stop = db.query(RouteStop).filter(RouteStop.id == sub.stop_id).first()
+        
+        # Generate deterministic OTP for today (for demo purposes)
+        # In prod, this should be stored in a daily_rides table
+        import hashlib
+        from datetime import date
+        today_str = date.today().strftime("%Y-%m-%d")
+        seed = f"{sub.id}-{today_str}-SECRET"
+        otp_hash = hashlib.sha256(seed.encode()).hexdigest()
+        otp = str(int(otp_hash[:8], 16) % 10000).zfill(4)
+        
+        result.append({
+            "id": sub.id,
+            "student_name": student.name if student else "Unknown",
+            "school_name": student.school_name if student else "Unknown",
+            "route_name": route.route_name if route else "Unknown",
+            "pickup_time": route.start_time if route else "00:00",
+            "driver_id": sub.assigned_driver_id,
+            "status": sub.status,
+            "otp": otp  # Include OTP for today
+        })
+        
+    return {"subscriptions": result}
+
+@app.get("/api/drivers/{driver_id}/school-routes")
+def get_driver_school_routes(driver_id: int, db: Session = Depends(get_db)):
+    """Get driver's assigned school routes for today"""
+    from datetime import date
+    today = date.today().strftime("%Y-%m-%d")
+    
+    # Get subscriptions assigned to this driver
+    subscriptions = db.query(SchoolPassSubscription).filter(
+        SchoolPassSubscription.assigned_driver_id == driver_id,
+        SchoolPassSubscription.status == "active"
+    ).all()
+    
+    if not subscriptions:
+        return {"today_routes": [], "stats": {"total_students": 0}}
+    
+    # Group by route
+    routes_dict = {}
+    for sub in subscriptions:
+        route = db.query(SchoolRoute).filter(SchoolRoute.id == sub.route_id).first()
+        if not route:
+            continue
+            
+        if route.id not in routes_dict:
+            routes_dict[route.id] = {
+                "route_id": route.id,
+                "route_name": route.route_name,
+                "type": route.route_type,
+                "start_time": route.start_time,
+                "status": "pending",
+                "students": [],
+                "stops": []
+            }
+        
+        student = db.query(StudentProfile).filter(StudentProfile.id == sub.student_id).first()
+        stop = db.query(RouteStop).filter(RouteStop.id == sub.stop_id).first()
+        
+        if student and stop:
+            # Generate deterministic OTP for today (MATCHING get_user_subscriptions)
+            import hashlib
+            today_str = date.today().strftime("%Y-%m-%d")
+            seed = f"{sub.id}-{today_str}-SECRET"
+            otp_hash = hashlib.sha256(seed.encode()).hexdigest()
+            otp = str(int(otp_hash[:8], 16) % 10000).zfill(4)
+            
+            routes_dict[route.id]["students"].append({
+                "id": student.id,
+                "name": student.name,
+                "stop_id": stop.id,
+                "stop_name": stop.stop_name,
+                "photo_url": None,
+                "otp": otp,
+                "status": "pending"
+            })
+    
+    # Get stops for each route
+    for route_id, route_data in routes_dict.items():
+        stops = db.query(RouteStop).filter(
+            RouteStop.route_id == route_id
+        ).order_by(RouteStop.stop_order).all()
+        
+        route_data["stops"] = [
+            {
+                "id": stop.id,
+                "name": stop.stop_name,
+                "address": stop.address,
+                "lat": float(stop.latitude),
+                "lng": float(stop.longitude),
+                "students_count": len([s for s in route_data["students"] if s["stop_id"] == stop.id]),
+                "eta": route_data["start_time"]
+            }
+            for stop in stops
+        ]
+    
+    return {
+        "today_routes": list(routes_dict.values()),
+        "stats": {
+            "total_students": sum(len(r["students"]) for r in routes_dict.values())
+        }
+    }
+
+class PickupEventCreate(BaseModel):
+    student_id: int
+    route_id: int
+    stop_id: int
+    event_type: str  # picked_up, dropped_off, absent
+    otp: str = None
+    location: dict = None
+    notes: str = None
+
+@app.post("/api/drivers/{driver_id}/pickup-event")
+def record_pickup_event(driver_id: int, event: PickupEventCreate, db: Session = Depends(get_db)):
+    """Record a pickup/dropoff event"""
+    
+    # Verify student exists
+    student = db.query(StudentProfile).filter(StudentProfile.id == event.student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    # Find subscription
+    subscription = db.query(SchoolPassSubscription).filter(
+        SchoolPassSubscription.student_id == event.student_id,
+        SchoolPassSubscription.route_id == event.route_id,
+        SchoolPassSubscription.assigned_driver_id == driver_id,
+        SchoolPassSubscription.status == "active"
+    ).first()
+    
+    # Create event
+    new_event = PickupEvent(
+        subscription_id=subscription.id if subscription else None,
+        driver_id=driver_id,
+        student_id=event.student_id,
+        route_id=event.route_id,
+        stop_id=event.stop_id,
+        event_type=event.event_type,
+        otp_verified=True if event.otp else False,
+        notes=event.notes
+    )
+    
+    if event.location:
+        new_event.location_lat = event.location.get("lat")
+        new_event.location_lng = event.location.get("lng")
+    
+    db.add(new_event)
+    db.commit()
+    
+    print(f"📍 {event.event_type.upper()}: Student {student.name} by Driver {driver_id}")
+    
+    return {
+        "event_id": new_event.id,
+        "status": "success",
+        "message": f"Student {event.event_type.replace('_', ' ')}"
+    }
+
+@app.post("/api/drivers/{driver_id}/start-school-route")
+def start_school_route(driver_id: int, route_id: int, db: Session = Depends(get_db)):
+    """Start a school route and mark driver as busy"""
+    driver = db.query(DriverInfo).filter(DriverInfo.driver_id == driver_id).first()
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+        
+    # Mark driver as unavailable for normal rides
+    driver.available = False
+    db.commit()
+    
+    print(f"🚌 Driver {driver_id} started school route {route_id}. Marked as BUSY.")
+    
+    return {"status": "success", "message": "Route started, driver marked busy"}
+
+# ==================== ADMIN APIs ====================
+
+@app.get("/api/admin/drivers")
+def get_all_drivers_admin(db: Session = Depends(get_db)):
+    """Get all drivers with verification status and details"""
+    drivers = db.query(DriverInfo).all()
+    
+    result = []
+    for driver in drivers:
+        # Count assigned school routes
+        assigned_routes = db.query(SchoolPassSubscription).filter(
+            SchoolPassSubscription.assigned_driver_id == driver.driver_id,
+            SchoolPassSubscription.status == "active"
+        ).count()
+        
+        result.append({
+            "driver_id": driver.driver_id,
+            "name": f"Driver {driver.driver_id}",
+            "phone_number": driver.phone_number,
+            "vehicle_type": driver.vehicle_type,
+            "vehicle_details": driver.vehicle_details,
+            "is_verified_safe": driver.is_verified_safe,
+            "available": driver.available,
+            "current_location": driver.current_location,
+            "penalty_count": driver.penalty_count,
+            "rating": float(driver.rating) if driver.rating else 5.0,
+            "rating_count": driver.rating_count,
+            "assigned_routes": assigned_routes,
+            "created_at": driver.created_at.isoformat() if driver.created_at else None,
+            "updated_at": driver.updated_at.isoformat() if driver.updated_at else None
+        })
+    
+    return {
+        "total_drivers": len(result),
+        "verified_drivers": sum(1 for d in result if d["is_verified_safe"]),
+        "drivers": result
+    }
+
+@app.post("/api/admin/drivers/{driver_id}/verify")
+def verify_driver(driver_id: int, db: Session = Depends(get_db)):
+    """Mark a driver as verified safe for school routes"""
+    driver = db.query(DriverInfo).filter(DriverInfo.driver_id == driver_id).first()
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+    
+    driver.is_verified_safe = True
+    db.commit()
+    
+    print(f"✅ Driver {driver_id} marked as VERIFIED SAFE")
+    
+    return {
+        "message": "Driver verified successfully",
+        "driver_id": driver_id,
+        "is_verified_safe": True
+    }
+
+@app.post("/api/admin/drivers/{driver_id}/unverify")
+def unverify_driver(driver_id: int, db: Session = Depends(get_db)):
+    """Remove verification status from a driver"""
+    driver = db.query(DriverInfo).filter(DriverInfo.driver_id == driver_id).first()
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+    
+    driver.is_verified_safe = False
+    db.commit()
+    
+    print(f"⚠️ Driver {driver_id} verification REMOVED")
+    
+    return {
+        "message": "Driver verification removed",
+        "driver_id": driver_id,
+        "is_verified_safe": False
+    }
+
+@app.get("/api/admin/drivers/verified")
+def get_verified_drivers(db: Session = Depends(get_db)):
+    """Get only verified drivers"""
+    drivers = db.query(DriverInfo).filter(DriverInfo.is_verified_safe == True).all()
+    
+    result = []
+    for driver in drivers:
+        assigned_routes = db.query(SchoolPassSubscription).filter(
+            SchoolPassSubscription.assigned_driver_id == driver.driver_id,
+            SchoolPassSubscription.status == "active"
+        ).count()
+        
+        result.append({
+            "driver_id": driver.driver_id,
+            "name": f"Driver {driver.driver_id}",
+            "phone_number": driver.phone_number,
+            "vehicle_details": driver.vehicle_details,
+            "assigned_routes": assigned_routes
+        })
+    
+    return {
+        "count": len(result),
+        "drivers": result
+    }
+
+@app.get("/api/admin/drivers/{driver_id}/details")
+def get_driver_details(driver_id: int, db: Session = Depends(get_db)):
+    """Get detailed information about a specific driver"""
+    driver = db.query(DriverInfo).filter(DriverInfo.driver_id == driver_id).first()
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+    
+    # Get assigned subscriptions
+    subscriptions = db.query(SchoolPassSubscription).filter(
+        SchoolPassSubscription.assigned_driver_id == driver_id,
+        SchoolPassSubscription.status == "active"
+    ).all()
+    
+    subscription_details = []
+    for sub in subscriptions:
+        student = db.query(StudentProfile).filter(StudentProfile.id == sub.student_id).first()
+        route = db.query(SchoolRoute).filter(SchoolRoute.id == sub.route_id).first()
+        
+        subscription_details.append({
+            "subscription_id": sub.id,
+            "student_name": student.name if student else "Unknown",
+            "route_name": route.route_name if route else "Unknown",
+            "start_date": sub.start_date,
+            "end_date": sub.end_date
+        })
+    
+    return {
+        "driver_id": driver.driver_id,
+        "name": f"Driver {driver.driver_id}",
+        "phone_number": driver.phone_number,
+        "vehicle_type": driver.vehicle_type,
+        "vehicle_details": driver.vehicle_details,
+        "is_verified_safe": driver.is_verified_safe,
+        "available": driver.available,
+        "current_location": driver.current_location,
+        "penalty_count": driver.penalty_count,
+        "assigned_subscriptions": subscription_details,
+        "created_at": driver.created_at.isoformat() if driver.created_at else None
+    }
 
 if __name__ == "__main__":
     import uvicorn

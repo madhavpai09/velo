@@ -62,9 +62,9 @@ interface MapViewProps {
   height?: string;
 }
 
-function LocationMarker({ 
-  onSelect 
-}: { 
+function LocationMarker({
+  onSelect
+}: {
   onSelect: (lat: number, lng: number) => void;
 }) {
   useMapEvents({
@@ -75,8 +75,8 @@ function LocationMarker({
   return null;
 }
 
-export default function MapView({ 
-  center, 
+export default function MapView({
+  center,
   zoom = 13,
   onLocationSelect,
   pickupMarker,
@@ -104,7 +104,7 @@ export default function MapView({
 
         {/* Pickup Marker */}
         {pickupMarker && (
-          <Marker 
+          <Marker
             position={[pickupMarker.lat, pickupMarker.lng]}
             icon={pickupIcon}
           >
@@ -121,7 +121,7 @@ export default function MapView({
 
         {/* Dropoff Marker */}
         {dropoffMarker && (
-          <Marker 
+          <Marker
             position={[dropoffMarker.lat, dropoffMarker.lng]}
             icon={dropoffIcon}
           >
@@ -138,7 +138,7 @@ export default function MapView({
 
         {/* Driver's Own Location Marker */}
         {driverLocation && (
-          <Marker 
+          <Marker
             position={[driverLocation.lat, driverLocation.lng]}
             icon={myLocationIcon}
           >
@@ -155,8 +155,8 @@ export default function MapView({
 
         {/* Driver Markers */}
         {drivers.map((driver) => (
-          <Marker 
-            key={driver.driver_id} 
+          <Marker
+            key={driver.driver_id}
             position={[driver.lat, driver.lng]}
             icon={driverIcon}
           >
