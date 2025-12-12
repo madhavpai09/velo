@@ -12,6 +12,7 @@ export default function SchoolPool() {
     const [selectedStop, setSelectedStop] = useState<RouteStop | null>(null);
     const [students, setStudents] = useState<any[]>([]);
     const [selectedStudent, setSelectedStudent] = useState<any | null>(null);
+    const [subscriptions, setSubscriptions] = useState<any[]>([]); // NEW
     const [loading, setLoading] = useState(false);
 
     // User ID management
@@ -25,6 +26,7 @@ export default function SchoolPool() {
     useEffect(() => {
         if (userId) {
             fetchStudents();
+            fetchSubscriptions(); // NEW
         }
     }, [userId]);
 
@@ -47,6 +49,58 @@ export default function SchoolPool() {
             }
         } catch (error) {
             console.error('Failed to fetch students:', error);
+        }
+    };
+
+    // NEW: Fetch Subscriptions
+    const fetchSubscriptions = async () => {
+        if (!userId) return;
+        try {
+            const response = await fetch(`http://localhost:8000/api/user/${userId}/subscriptions`);
+            if (response.ok) {
+                const data = await response.json();
+                setSubscriptions(data.subscriptions);
+            }
+        } catch (error) {
+            console.error('Failed to fetch subscriptions:', error);
+        }
+    };
+
+    // NEW: Cancel Subscription
+    const handleCancelSubscription = async (subId: number) => {
+        if (!confirm('Are you sure you want to cancel this subscription?')) return;
+        try {
+            const response = await fetch(`http://localhost:8000/api/subscriptions/${subId}`, {
+                method: 'DELETE'
+            });
+            if (response.ok) {
+                alert('Subscription cancelled');
+                fetchSubscriptions();
+            } else {
+                alert('Failed to cancel');
+            }
+        } catch (error) {
+            console.error('Cancel failed:', error);
+        }
+    };
+
+    // NEW: Delete Student
+    const handleDeleteStudent = async (studentId: number, e: React.MouseEvent) => {
+        e.stopPropagation(); // Prevent selection
+        if (!confirm('Are you sure you want to delete this student profile?')) return;
+        try {
+            const response = await fetch(`http://localhost:8000/api/students/${studentId}`, {
+                method: 'DELETE'
+            });
+            if (response.ok) {
+                alert('Student deleted');
+                fetchStudents();
+            } else {
+                const err = await response.json();
+                alert(err.detail || 'Failed to delete student');
+            }
+        } catch (error) {
+            console.error('Delete failed:', error);
         }
     };
 
@@ -105,6 +159,7 @@ export default function SchoolPool() {
                 otp: thisSub?.otp || '0000'
             });
             setStep(6);
+            fetchSubscriptions(); // Refresh list
         } catch (error) {
             console.error('Failed to subscribe:', error);
             alert('Failed to create subscription');
@@ -160,7 +215,34 @@ export default function SchoolPool() {
 
                 {!showUserIdInput && step === 1 && (
                     <div className="space-y-4">
-                        <h2 className="text-xl font-bold">Select School</h2>
+                        {/* CURRENT SUBSCRIPTIONS */}
+                        {subscriptions.length > 0 && (
+                            <div className="mb-8">
+                                <h2 className="text-xl font-bold mb-4">Your Active Subscriptions</h2>
+                                {subscriptions.map(sub => (
+                                    <div key={sub.id} className="bg-green-50 p-4 rounded-xl shadow-sm border border-green-200 mb-4">
+                                        <div className="flex justify-between items-start">
+                                            <div>
+                                                <h3 className="font-bold text-lg">{sub.student_name}</h3>
+                                                <p className="text-gray-600">{sub.school_name}</p>
+                                                <p className="text-sm text-gray-500 mt-1">Route: {sub.route_name} • {sub.pickup_time}</p>
+                                            </div>
+                                            <div className="text-right">
+                                                <span className="bg-green-200 text-green-800 px-2 py-1 rounded text-xs font-bold block mb-2">ACTIVE</span>
+                                                <button
+                                                    onClick={() => handleCancelSubscription(sub.id)}
+                                                    className="text-red-600 text-xs font-bold underline"
+                                                >
+                                                    Cancel Pass
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        <h2 className="text-xl font-bold">Select School for New Pass</h2>
                         {schools.map(school => (
                             <div key={school.id} onClick={() => handleSchoolSelect(school)} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 cursor-pointer hover:border-black">
                                 <h3 className="font-bold text-lg">{school.name}</h3>
@@ -207,15 +289,48 @@ export default function SchoolPool() {
                     <div className="space-y-4">
                         <h2 className="text-xl font-bold">Select Student</h2>
                         <p className="text-sm text-gray-500">User ID: {userId} • {students.length} student(s) found</p>
-                        {students.map(student => (
-                            <div key={student.id} onClick={() => handleStudentSelect(student)} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 cursor-pointer hover:border-black">
-                                <h3 className="font-bold">{student.name}</h3>
-                                <p className="text-gray-500">{student.school_name} • {student.grade}</p>
+
+                        {/* WARNING for Max Students */}
+                        {students.length >= 3 && (
+                            <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 mb-4">
+                                <p className="font-bold">Maximum Limit Reached</p>
+                                <p className="text-sm">You have reached the limit of 3 students per account.</p>
                             </div>
-                        ))}
-                        <button onClick={() => navigate(`/student-profile?userId=${userId}`)} className="w-full py-4 border-2 border-dashed border-gray-300 rounded-xl text-gray-500 font-bold">
-                            + Add New Student
-                        </button>
+                        )}
+
+                        {students.map(student => {
+                            // Check if student is already subscribed (Need to fetch subscriptions first or pass them)
+                            // For MVP, we'll try to subscribe and handle the error message gracefully, 
+                            // OR we can fetch subscriptions in fetchStudents.
+                            // Let's rely on the backend check for duplicates, which we just added.
+                            // But for better UX, let's assume we can add a check if we extended the student object.
+
+                            return (
+                                <div key={student.id} onClick={() => handleStudentSelect(student)} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 cursor-pointer hover:border-black flex justify-between items-center group">
+                                    <div>
+                                        <h3 className="font-bold">{student.name}</h3>
+                                        <p className="text-gray-500">{student.school_name} • {student.grade}</p>
+                                    </div>
+                                    <button
+                                        onClick={(e) => handleDeleteStudent(student.id, e)}
+                                        className="bg-red-50 text-red-600 p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-100"
+                                        title="Delete Profile"
+                                    >
+                                        🗑️
+                                    </button>
+                                </div>
+                            );
+                        })}
+
+                        {students.length < 3 ? (
+                            <button onClick={() => navigate(`/school-pool/student/new?userId=${userId}`)} className="w-full py-4 border-2 border-dashed border-gray-300 rounded-xl text-gray-500 font-bold hover:border-black hover:text-black transition-colors">
+                                + Add New Student
+                            </button>
+                        ) : (
+                            <button disabled className="w-full py-4 border-2 border-dashed border-gray-200 rounded-xl text-gray-300 font-bold cursor-not-allowed">
+                                + Add Student (Limit Reached)
+                            </button>
+                        )}
                     </div>
                 )}
 
@@ -254,6 +369,11 @@ export default function SchoolPool() {
                         >
                             {loading ? 'Processing...' : 'Pay & Subscribe'}
                         </button>
+
+                        {/* Show error if duplicate */}
+                        {subscriptionResult && subscriptionResult.message === "Student already subscribed" && (
+                            <p className="text-red-500 text-center font-bold">This student is already subscribed.</p>
+                        )}
                     </div>
                 )}
 

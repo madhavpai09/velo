@@ -21,73 +21,63 @@ from database.models import Base, RideRequest, DriverInfo, MatchedRide
 
 Base.metadata.create_all(bind=engine)
 
-# Stale match threshold
-STALE_MATCH_THRESHOLD_MINUTES = 5
-
-def _to_utc(dt):
-    """
-    FIX: Helper to safely convert any datetime to timezone-aware UTC
-    Handles None, naive, and timezone-aware datetimes
-    """
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        # Naive datetime - assume it's UTC
-        return dt.replace(tzinfo=timezone.utc)
-    # Already timezone-aware - convert to UTC
-    return dt.astimezone(timezone.utc)
+# Timeout for offering a ride to a driver (10 seconds)
+OFFER_TIMEOUT_SECONDS = 10
 
 async def cleanup_stale_matches():
     """
-    Background task to clean up stale matches
-    FIX: All datetime operations use timezone.utc
+    Background task:
+    1. Checks for matches that have timed out (driver didn't accept in 10s).
+    2. Marks them as 'declined' so Matcher picks the next driver.
     """
-    await asyncio.sleep(10)
+    await asyncio.sleep(5)
+    print("⏰ Timeout manager started (checking every 2s)")
     
     while True:
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(2)
             
             db = SessionLocal()
             try:
-                # FIX: Use timezone-aware UTC datetime
-                cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=STALE_MATCH_THRESHOLD_MINUTES)
+                # FIX: Use naive UTC to match DB default (avoid timezone confusion)
+                now = datetime.utcnow()
+                cutoff_time = now - timedelta(seconds=OFFER_TIMEOUT_SECONDS)
                 
-                stale_matches = db.query(MatchedRide).filter(
-                    MatchedRide.status == "pending_notification",
+                # Find expired offers (pending_notification OR offered)
+                expired_matches = db.query(MatchedRide).filter(
+                    MatchedRide.status.in_(["pending_notification", "offered"]),
                     MatchedRide.created_at < cutoff_time
                 ).all()
                 
-                if stale_matches:
-                    print(f"\n🧹 Found {len(stale_matches)} stale match(es) - cleaning up...")
+                if expired_matches:
+                    print(f"\n⏰ Found {len(expired_matches)} expired offer(s)...")
+                    print(f"   Current Time (UTC): {now}")
+                    print(f"   Cutoff Time (UTC):  {cutoff_time}")
                     
-                    for match in stale_matches:
-                        print(f"   🗑️  Deleting stale match: User {match.user_id} ↔ Driver {match.driver_id}")
+                    for match in expired_matches:
+                        print(f"   💀 EXPIRED Match {match.id}: Created at {match.created_at}")
                         
-                        driver = db.query(DriverInfo).filter(
-                            DriverInfo.driver_id == match.driver_id
-                        ).first()
-                        if driver:
-                            driver.available = True
+                        # Mark as DECLINED so matcher skips this driver next time
+                        match.status = "declined"
                         
+                        # Re-queue the ride so matcher finds it again
                         if match.ride_id:
                             ride = db.query(RideRequest).filter(
                                 RideRequest.id == match.ride_id
                             ).first()
-                            if ride and ride.status in ["matched", "broadcasting"]:
+                            if ride and ride.status in ["broadcasting", "matched"]:
                                 ride.status = "pending"
-                                print(f"   🔄 Ride {match.ride_id} re-queued")
+                                print(f"   🔄 Ride {match.ride_id} re-queued (Driver {match.driver_id} timed out)")
                         
-                        db.delete(match)
+                        print(f"   🚫 Match expired: User {match.user_id} -> Driver {match.driver_id}")
                     
                     db.commit()
-                    print(f"   ✅ Cleanup complete")
                 
             finally:
                 db.close()
                 
         except Exception as e:
-            print(f"⚠️ Stale match cleanup error: {e}")
+            print(f"⚠️ Timeout manager error: {e}")
 
 async def notifier_loop():
     """
@@ -111,32 +101,20 @@ async def notifier_loop():
                     recent_matches = []
                     stale_count = 0
                     
-                    # FIX: Use timezone-aware UTC for current time
-                    now = datetime.now(timezone.utc)
-                    
                     for match in unnotified_matches:
-                        # FIX: Use safe timezone conversion
-                        created = _to_utc(match.created_at)
-                        if created is None:
-                            recent_matches.append(match)
-                            continue
+                        # FIX: Use simple naive comparison
+                        created = match.created_at
+                        if not created:
+                             recent_matches.append(match)
+                             continue
                         
-                        age_minutes = (now - created).total_seconds() / 60
-                        if age_minutes < STALE_MATCH_THRESHOLD_MINUTES:
-                            recent_matches.append(match)
-                        else:
-                            stale_count += 1
-                    
-                    if recent_matches:
-                        print(f"\n📢 Found {len(recent_matches)} recent unnotified match(es)")
-                        if stale_count > 0:
-                            print(f"   ⏰ Skipping {stale_count} stale match(es)")
-                    else:
-                        print(".", end="", flush=True)
+                    if unnotified_matches:
+                        print(f" found {len(unnotified_matches)} pending matches")
                 else:
+                    # Print dot to show activity
                     print(".", end="", flush=True)
                 
-                for match in (recent_matches if unnotified_matches else []):
+                for match in unnotified_matches:
                     print(f"\n📝 Processing match ID: {match.id}")
                     print(f"   User ID: {match.user_id}")
                     print(f"   Driver ID: {match.driver_id}")
@@ -209,6 +187,18 @@ async def notifier_loop():
                     driver_notified = False
                     is_web_driver = False
                     
+                    # FIX: Try to get port from vehicle_details (JSON hack)
+                    driver_port = match.driver_id # Default
+                    try:
+                        import json
+                        if driver.vehicle_details and "{" in driver.vehicle_details:
+                            details = json.loads(driver.vehicle_details)
+                            if "port" in details:
+                                driver_port = details["port"]
+                                print(f"   🎯 Target Driver Port: {driver_port} (from DB)")
+                    except Exception:
+                        pass
+                    
                     try:
                         health = requests.get(f"http://localhost:{driver_port}/status", timeout=0.5)
                         if health.status_code == 200:
@@ -237,22 +227,28 @@ async def notifier_loop():
                             is_web_driver = True
                     except:
                         is_web_driver = True
-                        print(f"   ℹ️  Driver is web client - will poll")
+                        print(f"   ℹ️  Driver is web client (or connection failed) - will poll")
                         driver_notified = True
                     
                     # 4. Handle notification results
                     if user_notified and driver_notified:
                         if is_web_user or is_web_driver:
-                            # Web clients - keep match for polling
-                            print(f"   ✅ Match stored for web client polling")
+                            # Web clients: update status to 'offered' so they can poll it
+                            match.status = "offered"
                             db.commit()
+                            print(f"   ✅ Match stored for web client polling (Status: offered)")
                         else:
-                            # Both Python clients notified - delete match
-                            db.delete(match)
+                            # Both Python clients notified - delete match (legacy behavior? Or also keep as offered?)
+                            # If we delete, they can't accept it via ID?
+                            # Wait, 'accept_ride' requires the match to exist.
+                            # So we MUST NOT DELETE IT.
+                            
+                            match.status = "offered"
                             db.commit()
-                            print(f"   ✅ Match deleted after Python client notification")
+                            print(f"   ✅ Match set to 'offered' (waiting for accept)")
+                    
                     elif not driver_notified:
-                        # Driver failed - mark unavailable and re-queue ride
+                         # Driver failed - mark unavailable and re-queue ride
                         driver.available = False
                         ride.status = "pending"
                         db.delete(match)

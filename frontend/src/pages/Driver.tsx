@@ -87,29 +87,26 @@ export default function Driver() {
 
     const pollInterval = setInterval(async () => {
       try {
-        // Update location (mock movement)
-        const newLat = currentLocation.lat + (Math.random() - 0.5) * 0.0001;
-        const newLng = currentLocation.lng + (Math.random() - 0.5) * 0.0001;
-        setCurrentLocation({ lat: newLat, lng: newLng });
-
-        await updateDriverLocation(driverId, { lat: newLat, lng: newLng });
+        // NOTE: Location updates now happen via Map Click (Manual)
+        // We only poll for status/rides here.
 
         const driverStatus = await getDriverStatus(parseInt(driverId));
         if (driverStatus) {
-          setStatus(driverStatus);
+          // Only update local status if changed, maybe?
+          // For now just keep it simple
+        }
 
-          // Check for pending ride offer
-          const pendingRide = await getDriverPendingRide(parseInt(driverId));
-          if (pendingRide && pendingRide.has_ride && !currentRide) {
-            setCurrentRide({
-              id: pendingRide.ride_id,
-              match_id: pendingRide.match_id,
-              source: pendingRide.pickup_location,
-              dest: pendingRide.dropoff_location,
-              fare: pendingRide.fare ? `₹${pendingRide.fare}` : "₹100", // Use actual fare
-              type: pendingRide.ride_type
-            });
-          }
+        // Check for pending ride offer
+        const pendingRide = await getDriverPendingRide(parseInt(driverId));
+        if (pendingRide && pendingRide.has_ride && !currentRide) {
+          setCurrentRide({
+            id: pendingRide.ride_id,
+            match_id: pendingRide.match_id,
+            source: pendingRide.pickup_location,
+            dest: pendingRide.dropoff_location,
+            fare: pendingRide.fare ? `₹${pendingRide.fare}` : "₹100", // Use actual fare
+            type: pendingRide.ride_type
+          });
         }
       } catch (error) {
         console.error('Polling error:', error);
@@ -117,7 +114,18 @@ export default function Driver() {
     }, 3000);
 
     return () => clearInterval(pollInterval);
-  }, [isAvailable, driverId, currentLocation, currentRide]);
+  }, [isAvailable, driverId, currentRide]);
+
+  // Handle Map Click for Location Update
+  const handleMapClick = async (lat: number, lng: number) => {
+    setCurrentLocation({ lat, lng });
+    try {
+      await updateDriverLocation(driverId, { lat, lng });
+      console.log("📍 Location updated:", lat, lng);
+    } catch (e) {
+      console.error("Failed to update location", e);
+    }
+  };
 
   const acceptRide = async () => {
     if (!currentRide || !currentRide.match_id) return;
@@ -342,6 +350,7 @@ export default function Driver() {
             <MapView
               center={[currentLocation.lat, currentLocation.lng]}
               zoom={15}
+              onLocationSelect={handleMapClick}
               drivers={[{
                 driver_id: parseInt(driverId) || 0,
                 lat: currentLocation.lat,

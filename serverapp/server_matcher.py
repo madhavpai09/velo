@@ -72,6 +72,19 @@ def is_driver_online(driver_id: int, db=None) -> bool:
     # Fallback: try port check (for Python clients)
     try:
         driver_port = driver_id
+        
+        # FIX: Try to get port from DB object if we have it
+        if db is not None:
+             driver = db.query(DriverInfo).filter(DriverInfo.driver_id == driver_id).first()
+             if driver and driver.vehicle_details and "{" in driver.vehicle_details:
+                 try:
+                     import json
+                     details = json.loads(driver.vehicle_details)
+                     if "port" in details:
+                         driver_port = details["port"]
+                 except:
+                     pass
+
         response = requests.get(
             f"http://localhost:{driver_port}/status",
             timeout=1
@@ -81,7 +94,7 @@ def is_driver_online(driver_id: int, db=None) -> bool:
             return data.get('driver_id') == f"DRIVER-{driver_id}" and data.get('is_available', False)
         return False
     except Exception as e:
-        print(f"   ⚠️  Driver {driver_id} port check failed: {e}")
+        # print(f"   ⚠️  Driver {driver_id} port check failed: {e}")
         return False
 
 def calculate_distance(loc1_str: str, loc2_str: str) -> float:
@@ -217,18 +230,22 @@ async def matcher_loop():
                 # But to prevent double offering, we might want to? 
                 # For now, let's keep them available but the ride is 'broadcasting' so it won't be picked up again
                 
-                # Create matched ride record with status="offered"
-                matched = MatchedRide(
+                # Create matched ride record with status="pending_notification"
+                # This status is what the notifier looks for to send notifications
+                # FIX: Explicitly set created_at to ensure sync with Notifier
+                new_match = MatchedRide(
                     user_id=ride.user_id,
                     driver_id=online_driver.driver_id,
-                    ride_id=ride.id,  # Store ride_id for direct lookup
-                    status="offered"
+                    ride_id=ride.id,
+                    status="pending_notification",
+                    created_at=datetime.utcnow()
                 )
-                db.add(matched)
+                db.add(new_match)
                 db.commit()
+                db.refresh(new_match)
                 
-                logger.info(f"   ✅ Ride offered to driver {online_driver.driver_id} (Match ID: {matched.id})")
-                print(f"   ✅ Ride offered to driver {online_driver.driver_id} (Match ID: {matched.id})")
+                logger.info(f"   ✅ Ride offered to driver {online_driver.driver_id} (Match ID: {new_match.id})")
+                print(f"   ✅ Ride offered to driver {online_driver.driver_id} (Match ID: {new_match.id}, Time: {new_match.created_at})")
                     
             finally:
                 db.close()

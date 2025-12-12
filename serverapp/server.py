@@ -9,6 +9,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(__file__))
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from database.connections import SessionLocal, engine
 from database.models import Base, RideRequest, DriverInfo, MatchedRide, StudentProfile, Subscription, SubscriptionSchedule, DriverRating
 from models.schemas import RideCreate, DriverCreate, UpdateMatchPayload
@@ -93,25 +94,47 @@ def register_driver(driver: DriverRegister, db: Session = Depends(get_db)):
         lng = float(driver.location.get('lng', 0))
         location_str = f"{lat},{lng}"
             
+        # FIX: Store port in vehicle_details (Hack to avoid schema change)
+        import json
+        
+        # Create details object
+        details_obj = {
+            "details": driver.vehicle_details,
+            "port": driver.port
+        }
+        details_json = json.dumps(details_obj)
+            
+        # Check if driver already exists
         existing = db.query(DriverInfo).filter(DriverInfo.driver_id == numeric_id).first()
+        
         if existing:
+            # Update existing driver
             existing.available = True
             existing.current_location = location_str
             existing.vehicle_type = driver.vehicle_type
             existing.phone_number = driver.phone_number
-            existing.vehicle_details = driver.vehicle_details
-            print(f"✅ Updated driver {numeric_id}")
+            existing.vehicle_details = details_json # Store JSON
+            print(f"✅ Updated driver {numeric_id} (Port: {driver.port})")
         else:
+            # Generate NEW ID starting from 8100
+            max_id = db.query(func.max(DriverInfo.driver_id)).scalar() or 0
+            new_id = max(8100, max_id + 1)
+            
+            # If the requested ID was >= 8100 and > max_id (e.g. manual override attempt), should we respect it?
+            # User requirement: "Auto-increment IDs but enforce minimum ID = 8100"
+            # It's safer to always auto-assign for new registrations to avoid collisions.
+            numeric_id = new_id
+            
             new_driver = DriverInfo(
                 driver_id=numeric_id,
                 available=True,
                 current_location=location_str,
                 vehicle_type=driver.vehicle_type,
                 phone_number=driver.phone_number,
-                vehicle_details=driver.vehicle_details
+                vehicle_details=details_json # Store JSON
             )
             db.add(new_driver)
-            print(f"✅ Created driver {numeric_id}")
+            print(f"✅ Created NEW driver {numeric_id} (Port: {driver.port})")
             
         db.commit()
         
@@ -183,6 +206,34 @@ def create_ride(ride: RideCreate, db: Session = Depends(get_db)):
     db.refresh(new)
     print(f"✅ Ride {new.id} created for user {ride.user_id}")
     return {"message": "ride created", "ride_id": new.id}
+
+@app.post("/api/ride/{ride_id}/cancel")
+def cancel_ride(ride_id: int, db: Session = Depends(get_db)):
+    """User cancels a ride request"""
+    ride = db.query(RideRequest).filter(RideRequest.id == ride_id).first()
+    if not ride:
+        raise HTTPException(status_code=404, detail="Ride not found")
+        
+    print(f"🚫 User cancelling ride {ride_id}")
+    
+    # Check if there is a match in progress
+    match = db.query(MatchedRide).filter(MatchedRide.ride_id == ride_id).first()
+    if match:
+        # If driver was assigned, free them
+        if match.status == "accepted" or match.status == "in_progress":
+             driver = db.query(DriverInfo).filter(DriverInfo.driver_id == match.driver_id).first()
+             if driver:
+                 driver.available = True
+                 print(f"   🔓 Driver {driver.driver_id} freed")
+        
+        db.delete(match)
+        print(f"   🗑️  Match deleted")
+    
+    # Mark ride as cancelled
+    ride.status = "cancelled"
+    db.commit()
+    
+    return {"message": "Ride cancelled successfully"}
 
 @app.post("/api/ride-request")
 def create_ride_request(request: dict, db: Session = Depends(get_db)):
@@ -270,6 +321,9 @@ def update_driver_location(driver_id: str, location: dict, db: Session = Depends
         db.commit()
         return {"message": "Location updated", "location": location_str}
     except Exception as e:
+        print(f"❌ Update location error: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/driver/{driver_id}/pending-ride")
@@ -283,12 +337,21 @@ def get_driver_pending_ride(driver_id: int, db: Session = Depends(get_db)):
     ).first()
     
     if not match:
+        # DEBUG: Why no match?
+        check = db.query(MatchedRide).filter(MatchedRide.driver_id == driver_id).first()
+        if check:
+            print(f"   🔍 Polling Debug: Driver {driver_id} has match {check.id} but status is '{check.status}' (Wanted 'offered')")
+        else:
+            # Only print occasionally to avoid spam
+            pass 
         return {"has_ride": False}
         
     ride = db.query(RideRequest).filter(RideRequest.id == match.ride_id).first()
     if not ride:
+        print(f"   ⚠️ Polling Error: Match {match.id} has no Ride {match.ride_id}")
         return {"has_ride": False}
-        
+    
+    print(f"   ✅ Driver {driver_id} found OFFERED ride {ride.id}")
     return {
         "has_ride": True,
         "match_id": match.id,
@@ -500,6 +563,11 @@ def rate_driver(rating: RatingCreate, db: Session = Depends(get_db)):
 # NEW: Student Profile APIs
 @app.post("/api/student/create")
 def create_student(student: StudentCreate, db: Session = Depends(get_db)):
+    # Limit to 3 students per user
+    count = db.query(StudentProfile).filter(StudentProfile.user_id == student.user_id).count()
+    if count >= 3:
+        raise HTTPException(status_code=400, detail="Maximum 3 students allowed per user account")
+
     new_student = StudentProfile(
         user_id=student.user_id,
         name=student.name,
@@ -522,13 +590,77 @@ def get_user_students(user_id: int, db: Session = Depends(get_db)):
 # NEW: Subscription APIs
 @app.post("/api/subscription/create")
 def create_subscription(sub: SubscriptionCreate, db: Session = Depends(get_db)):
-    # Find a safe driver
-    safe_driver = db.query(DriverInfo).filter(
-        DriverInfo.is_verified_safe == True,
-        DriverInfo.available == True
+    # Check for existing active subscription
+    existing = db.query(SchoolPassSubscription).filter(
+        SchoolPassSubscription.student_id == sub.student_id,
+        SchoolPassSubscription.status == "active"
     ).first()
     
-    assigned_driver_id = safe_driver.driver_id if safe_driver else None
+    if existing:
+        print(f"⚠️ Student {sub.student_id} already has an active subscription {existing.id}")
+        # Return existing subscription info to prevent duplicates
+        driver = db.query(DriverInfo).filter(DriverInfo.driver_id == existing.assigned_driver_id).first() if existing.assigned_driver_id else None
+        return {
+            "message": "Student already subscribed", 
+            "id": existing.id,
+            "driver_id": existing.assigned_driver_id,
+            "driver_name": f"Driver {driver.driver_id}" if driver else "Pending Assignment"
+        }
+
+    # Find a driver (NEW LOGIC: 1 School, Max 3 Kids)
+    # 1. Identify School from Route
+    route = db.query(SchoolRoute).filter(SchoolRoute.id == sub.route_id).first()
+    if not route:
+         raise HTTPException(status_code=404, detail="Route not found")
+         
+    assigned_driver_id = None
+    
+    assigned_driver_id = None
+    
+    # --- DRIVER ASSIGNMENT STRATEGY ---
+    # Goal: Max 3 students per driver, Single School per driver
+    
+    # 1. Look for a driver ALREADY assigned to this school with capacity
+    # Get all active subscriptions for this school's routes
+    school_subs = db.query(SchoolPassSubscription).join(SchoolRoute).filter(
+        SchoolRoute.school_id == route.school_id,
+        SchoolPassSubscription.status == "active",
+        SchoolPassSubscription.assigned_driver_id != None
+    ).all()
+    
+    # Group by driver to count loads
+    driver_loads = {}
+    for s in school_subs:
+        did = s.assigned_driver_id
+        driver_loads[did] = driver_loads.get(did, 0) + 1
+        
+    # Find a driver with < 3 students
+    candidate_driver_id = None
+    for did, load in driver_loads.items():
+        if load < 3:
+            candidate_driver_id = did
+            break
+            
+    # 2. If no existing driver has space, recruit a NEW driver
+    if not candidate_driver_id:
+        # Find drivers with ZERO active subscriptions (Free agents)
+        # We need check all active subscriptions to exclude busy drivers
+        busy_driver_ids = db.query(SchoolPassSubscription.assigned_driver_id).filter(
+            SchoolPassSubscription.status == "active",
+            SchoolPassSubscription.assigned_driver_id != None
+        ).distinct().all()
+        busy_ids = [r[0] for r in busy_driver_ids]
+        
+        free_driver = db.query(DriverInfo).filter(
+            DriverInfo.is_verified_safe == True,
+            DriverInfo.available == True,
+            ~DriverInfo.driver_id.in_(busy_ids)
+        ).first()
+        
+        if free_driver:
+            candidate_driver_id = free_driver.driver_id
+            
+    assigned_driver_id = candidate_driver_id
     
     # Create subscription
     new_sub = Subscription(
@@ -572,6 +704,42 @@ def create_subscription(sub: SubscriptionCreate, db: Session = Depends(get_db)):
         "driver_id": assigned_driver_id,
         "driver_name": f"Driver {assigned_driver_id}" if assigned_driver_id else "Pending Assignment"
     }
+
+@app.delete("/api/students/{student_id}")
+def delete_student(student_id: int, db: Session = Depends(get_db)):
+    """Delete a student profile"""
+    student = db.query(StudentProfile).filter(StudentProfile.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+        
+    # Check for active subscriptions
+    active_sub = db.query(SchoolPassSubscription).filter(
+        SchoolPassSubscription.student_id == student_id, 
+        SchoolPassSubscription.status == "active"
+    ).first()
+    
+    if active_sub:
+        raise HTTPException(status_code=400, detail="Cannot delete student with active subscription. Cancel subscription first.")
+        
+    db.delete(student)
+    db.commit()
+    return {"message": "Student deleted"}
+
+@app.delete("/api/subscriptions/{subscription_id}")
+def cancel_subscription(subscription_id: int, db: Session = Depends(get_db)):
+    """Cancel a subscription"""
+    sub = db.query(SchoolPassSubscription).filter(SchoolPassSubscription.id == subscription_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+        
+    sub.status = "cancelled"
+    sub.end_date = datetime.utcnow().strftime("%Y-%m-%d") # End immediately
+    
+    # Clean up schedules? Or keep for history?
+    # For now keep checking logic, but marking status cancelled is enough
+    
+    db.commit()
+    return {"message": "Subscription cancelled"}
 
 # OLD ENDPOINT - REPLACED BY SCHOOL POOL PASS VERSION BELOW
 # @app.get("/api/user/{user_id}/subscriptions")
@@ -827,79 +995,99 @@ def get_user_subscriptions(user_id: int, db: Session = Depends(get_db)):
 def get_driver_school_routes(driver_id: int, db: Session = Depends(get_db)):
     """Get driver's assigned school routes for today"""
     from datetime import date
-    today = date.today().strftime("%Y-%m-%d")
+    import datetime
     
-    # Get subscriptions assigned to this driver
-    subscriptions = db.query(SchoolPassSubscription).filter(
+    # Get day of week (Monday=0, Sunday=6)
+    # We map 0-4 to mon-fri. For demo, let's assume it's a weekday.
+    day_name = date.today().strftime("%A").lower()
+    
+    # Get all schedule items for this driver on this day
+    # Join with Subscription to ensure it's active
+    schedules = db.query(SubscriptionSchedule).join(SchoolPassSubscription).filter(
         SchoolPassSubscription.assigned_driver_id == driver_id,
-        SchoolPassSubscription.status == "active"
+        SchoolPassSubscription.status == "active",
+        SubscriptionSchedule.day_of_week == day_name
     ).all()
     
-    if not subscriptions:
+    if not schedules:
+        # Fallback for demo: if no schedule found for 'today', try 'monday' (for testing weekends)
+        schedules = db.query(SubscriptionSchedule).join(SchoolPassSubscription).filter(
+            SchoolPassSubscription.assigned_driver_id == driver_id,
+            SchoolPassSubscription.status == "active",
+            SubscriptionSchedule.day_of_week == "monday"
+        ).all()
+        
+    if not schedules:
         return {"today_routes": [], "stats": {"total_students": 0}}
+
+    # Group by Route + Type (Pickup/Drop)
+    # Key: (route_id, ride_type)
+    trips = {}
     
-    # Group by route
-    routes_dict = {}
-    for sub in subscriptions:
+    for sched in schedules:
+        sub = db.query(SchoolPassSubscription).filter(SchoolPassSubscription.id == sched.subscription_id).first()
         route = db.query(SchoolRoute).filter(SchoolRoute.id == sub.route_id).first()
-        if not route:
-            continue
-            
-        if route.id not in routes_dict:
-            routes_dict[route.id] = {
+        if not route: continue
+        
+        trip_key = (route.id, sched.ride_type)
+        
+        if trip_key not in trips:
+            trips[trip_key] = {
                 "route_id": route.id,
                 "route_name": route.route_name,
-                "type": route.route_type,
-                "start_time": route.start_time,
-                "status": "pending",
+                "type": sched.ride_type,
+                "start_time": sched.pickup_time,
                 "students": [],
                 "stops": []
             }
-        
+            
+        # Add Student to Trip
         student = db.query(StudentProfile).filter(StudentProfile.id == sub.student_id).first()
         stop = db.query(RouteStop).filter(RouteStop.id == sub.stop_id).first()
         
         if student and stop:
-            # Generate deterministic OTP for today (MATCHING get_user_subscriptions)
             import hashlib
             today_str = date.today().strftime("%Y-%m-%d")
             seed = f"{sub.id}-{today_str}-SECRET"
             otp_hash = hashlib.sha256(seed.encode()).hexdigest()
             otp = str(int(otp_hash[:8], 16) % 10000).zfill(4)
             
-            routes_dict[route.id]["students"].append({
+            trips[trip_key]["students"].append({
                 "id": student.id,
                 "name": student.name,
                 "stop_id": stop.id,
                 "stop_name": stop.stop_name,
-                "photo_url": None,
                 "otp": otp,
                 "status": "pending"
             })
-    
-    # Get stops for each route
-    for route_id, route_data in routes_dict.items():
-        stops = db.query(RouteStop).filter(
-            RouteStop.route_id == route_id
-        ).order_by(RouteStop.stop_order).all()
+
+    # Final formatting with stops
+    final_routes = []
+    for key, trip in trips.items():
+        route_id = trip["route_id"]
         
-        route_data["stops"] = [
+        # Get stops for this route
+        stops = db.query(RouteStop).filter(RouteStop.route_id == route_id).order_by(RouteStop.stop_order).all()
+        
+        # If dropping off, reverse the stops logically or just list them
+        # For simplicity, we just list stops and let frontend show navigation
+        
+        trip["stops"] = [
             {
-                "id": stop.id,
-                "name": stop.stop_name,
-                "address": stop.address,
-                "lat": float(stop.latitude),
-                "lng": float(stop.longitude),
-                "students_count": len([s for s in route_data["students"] if s["stop_id"] == stop.id]),
-                "eta": route_data["start_time"]
-            }
-            for stop in stops
+                "id": s.id,
+                "name": s.stop_name,
+                "lat": float(s.latitude),
+                "lng": float(s.longitude),
+                "eta": trip["start_time"]
+            } for s in stops
         ]
-    
+        
+        final_routes.append(trip)
+        
     return {
-        "today_routes": list(routes_dict.values()),
+        "today_routes": final_routes,
         "stats": {
-            "total_students": sum(len(r["students"]) for r in routes_dict.values())
+            "total_students": sum(len(t["students"]) for t in final_routes)
         }
     }
 
@@ -1107,9 +1295,7 @@ def get_driver_details(driver_id: int, db: Session = Depends(get_db)):
         "current_location": driver.current_location,
         "penalty_count": driver.penalty_count,
         "assigned_subscriptions": subscription_details,
-        "created_at": driver.created_at.isoformat() if driver.created_at else None
     }
-
 if __name__ == "__main__":
     import uvicorn
     print("\n" + "="*60)

@@ -250,6 +250,15 @@ export const completeRide = async (driverId: number, rideId: number): Promise<an
   return await response.json();
 };
 
+export const cancelRide = async (rideId: number): Promise<any> => {
+  const response = await fetch(`${API_BASE}/ride/${rideId}/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!response.ok) throw new Error('Failed to cancel ride');
+  return await response.json();
+};
+
 export const rateDriver = async (
   driverId: number,
   userId: number,

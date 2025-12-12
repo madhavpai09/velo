@@ -5,6 +5,7 @@ import {
   createRideRequest,
   getAvailableDrivers,
   rateDriver,
+  cancelRide,
   DriverForMap
 } from '../utils/api';
 
@@ -80,6 +81,18 @@ export default function Ride() {
                 otp: data.otp
               });
 
+              // Parse driver location for map
+              if (data.driver_location) {
+                const [dLat, dLng] = data.driver_location.split(',').map(Number);
+                // Create a live driver object for the map
+                setDrivers([{
+                  driver_id: data.driver_id,
+                  lat: dLat,
+                  lng: dLng,
+                  available: false // Busy with this ride
+                }]);
+              }
+
               if (data.ride_id) {
                 setRideId(data.ride_id);
               }
@@ -89,8 +102,10 @@ export default function Ride() {
               setAssignedDriver(null);
               setShowRatingModal(true);
             }
-          } else if (assignedDriver && assignedDriver.status === 'in_progress') {
-            // Handle case where has_ride becomes false but we were in progress (completed)
+          } else if (assignedDriver && (assignedDriver.status === 'in_progress' || assignedDriver.status === 'accepted')) {
+            // Handle case where has_ride becomes false (Completed)
+            // Catch both 'in_progress' and 'accepted' to handle race conditions where polling misses the in_progress state
+            console.log("🏁 Ride finished (detected via polling). Showing rating.");
             setLastCompletedRide({ id: assignedDriver.ride_id!, driverId: assignedDriver.driver_id });
             setAssignedDriver(null);
             setShowRatingModal(true);
@@ -102,7 +117,7 @@ export default function Ride() {
     }, 2000);
 
     return () => clearInterval(pollInterval);
-  }, [userId]);
+  }, [userId, assignedDriver]);
 
   const fetchDrivers = async () => {
     const driverData = await getAvailableDrivers();
@@ -155,6 +170,22 @@ export default function Ride() {
       alert(`Failed to create ride: ${error.message}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleCancelRide = async () => {
+    if (!rideId) return;
+
+    // eslint-disable-next-line no-restricted-globals
+    if (confirm('Are you sure you want to cancel the ride?')) {
+      try {
+        await cancelRide(rideId);
+        handleNewRide();
+        alert('Ride cancelled successfully');
+      } catch (error) {
+        console.error('Failed to cancel ride:', error);
+        alert('Failed to cancel ride');
+      }
     }
   };
 
@@ -332,6 +363,13 @@ export default function Ride() {
               <div className="w-full bg-gray-100 h-1.5 rounded-full overflow-hidden">
                 <div className="h-full bg-black w-1/2 animate-[shimmer_1.5s_infinite]"></div>
               </div>
+
+              <button
+                onClick={handleCancelRide}
+                className="mt-6 px-6 py-2 bg-red-100 text-red-600 rounded-full font-medium hover:bg-red-200 transition-colors"
+              >
+                Cancel Request
+              </button>
             </div>
           ) : (
             <div className="space-y-6">

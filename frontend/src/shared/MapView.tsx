@@ -57,7 +57,7 @@ interface MapViewProps {
   onLocationSelect?: (lat: number, lng: number) => void;
   pickupMarker?: { lat: number; lng: number } | null;
   dropoffMarker?: { lat: number; lng: number } | null;
-  drivers?: Array<{ driver_id: number; lat: number; lng: number }>;
+  drivers?: Array<{ driver_id: number; lat: number; lng: number; available?: boolean }>;
   driverLocation?: { lat: number; lng: number } | null;
   height?: string;
 }
@@ -163,7 +163,9 @@ export default function MapView({
             <Popup>
               <div className="text-center">
                 <div className="font-bold">🚗 Driver {driver.driver_id}</div>
-                <div className="text-xs text-green-600">Available</div>
+                <div className={`text-xs ${driver.available ? 'text-green-600' : 'text-red-600'}`}>
+                  {driver.available !== false ? 'Available' : 'Busy'}
+                </div>
                 <div className="text-xs text-gray-600">
                   {driver.lat.toFixed(5)}, {driver.lng.toFixed(5)}
                 </div>

@@ -94,6 +94,15 @@ class VeloDriverClient:
             response.raise_for_status()
             
             result = response.json()
+            
+            # Update local ID if server assigned a new one
+            if "numeric_id" in result:
+                new_id = result["numeric_id"]
+                if new_id != self.driver_id:
+                    print(f"⚠️  Server assigned new Driver ID: {new_id} (requested {self.driver_id})")
+                    self.driver_id = new_id
+                    self.driver_name = f"Driver {new_id}"
+            
             print(f"✅ Registration successful! Status: {result.get('status')}")
             return result
             
