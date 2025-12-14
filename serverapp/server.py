@@ -116,14 +116,13 @@ def register_driver(driver: DriverRegister, db: Session = Depends(get_db)):
             existing.vehicle_details = details_json # Store JSON
             print(f"✅ Updated driver {numeric_id} (Port: {driver.port})")
         else:
-            # Generate NEW ID starting from 8100
-            max_id = db.query(func.max(DriverInfo.driver_id)).scalar() or 0
-            new_id = max(8100, max_id + 1)
-            
-            # If the requested ID was >= 8100 and > max_id (e.g. manual override attempt), should we respect it?
-            # User requirement: "Auto-increment IDs but enforce minimum ID = 8100"
-            # It's safer to always auto-assign for new registrations to avoid collisions.
-            numeric_id = new_id
+            # Generate NEW ID if none provided (or 0)
+            if numeric_id > 0:
+                print(f"   Using requested custom ID: {numeric_id}")
+            else:
+                max_id = db.query(func.max(DriverInfo.driver_id)).scalar() or 0
+                numeric_id = max(8100, max_id + 1)
+                print(f"   Auto-assigned ID: {numeric_id}")
             
             new_driver = DriverInfo(
                 driver_id=numeric_id,
@@ -320,6 +319,8 @@ def update_driver_location(driver_id: str, location: dict, db: Session = Depends
         driver.updated_at = datetime.utcnow()
         db.commit()
         return {"message": "Location updated", "location": location_str}
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ Update location error: {e}")
         import traceback
@@ -732,11 +733,16 @@ def cancel_subscription(subscription_id: int, db: Session = Depends(get_db)):
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
         
+    
+    # Only decrement occupancy if the subscription was active
+    if sub.status == "active":
+        route = db.query(SchoolRoute).filter(SchoolRoute.id == sub.route_id).first()
+        if route and route.current_occupancy > 0:
+            route.current_occupancy -= 1
+            print(f"📉 Decremented occupancy for route {route.route_name} to {route.current_occupancy}")
+            
     sub.status = "cancelled"
     sub.end_date = datetime.utcnow().strftime("%Y-%m-%d") # End immediately
-    
-    # Clean up schedules? Or keep for history?
-    # For now keep checking logic, but marking status cancelled is enough
     
     db.commit()
     return {"message": "Subscription cancelled"}
@@ -901,6 +907,25 @@ def create_school_pass_subscription(sub: SchoolPassSubscriptionCreate, db: Sessi
     
     db.commit()
     db.refresh(new_sub)
+
+    # NEW: Create schedules based on route days
+    import json
+    try:
+        if route.days_of_week:
+            days = json.loads(route.days_of_week)
+            for day in days:
+                # Create schedule for this day
+                schedule = SubscriptionSchedule(
+                    subscription_id=new_sub.id,
+                    day_of_week=day.lower(),
+                    pickup_time=route.start_time,
+                    ride_type=route.route_type
+                )
+                db.add(schedule)
+            db.commit()
+            print(f"✅ Created {len(days)} schedule entries for subscription {new_sub.id}")
+    except Exception as e:
+        print(f"❌ Failed to create schedules: {e}")
     
     print(f"✅ School Pass subscription created: {new_sub.id} for student {student.name}")
     
@@ -1001,20 +1026,29 @@ def get_driver_school_routes(driver_id: int, db: Session = Depends(get_db)):
     # We map 0-4 to mon-fri. For demo, let's assume it's a weekday.
     day_name = date.today().strftime("%A").lower()
     
-    # Get all schedule items for this driver on this day
     # Join with Subscription to ensure it's active
-    schedules = db.query(SubscriptionSchedule).join(SchoolPassSubscription).filter(
+    # Handle both full names ("monday") and short names ("mon")
+    target_days = [day_name, day_name[:3]]
+    
+    schedules = db.query(SubscriptionSchedule).join(
+        SchoolPassSubscription, 
+        SubscriptionSchedule.subscription_id == SchoolPassSubscription.id
+    ).filter(
         SchoolPassSubscription.assigned_driver_id == driver_id,
         SchoolPassSubscription.status == "active",
-        SubscriptionSchedule.day_of_week == day_name
+        SubscriptionSchedule.day_of_week.in_(target_days)
     ).all()
     
     if not schedules:
         # Fallback for demo: if no schedule found for 'today', try 'monday' (for testing weekends)
-        schedules = db.query(SubscriptionSchedule).join(SchoolPassSubscription).filter(
+        fallback_days = ["monday", "mon"]
+        schedules = db.query(SubscriptionSchedule).join(
+            SchoolPassSubscription,
+            SubscriptionSchedule.subscription_id == SchoolPassSubscription.id
+        ).filter(
             SchoolPassSubscription.assigned_driver_id == driver_id,
             SchoolPassSubscription.status == "active",
-            SubscriptionSchedule.day_of_week == "monday"
+            SubscriptionSchedule.day_of_week.in_(fallback_days)
         ).all()
         
     if not schedules:

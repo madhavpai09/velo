@@ -89,7 +89,7 @@ export default function SubscriptionSetup() {
         return (
             <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-6">
                 <div className="bg-white p-8 rounded-xl shadow-lg max-w-md w-full text-center">
-                    <div className="text-6xl mb-4">🎉</div>
+                    <div className="text-6xl mb-4">wooo hoo!</div>
                     <h2 className="text-2xl font-bold mb-2">Subscription Active!</h2>
                     <p className="text-gray-600 mb-6">Your child's rides are scheduled.</p>
 

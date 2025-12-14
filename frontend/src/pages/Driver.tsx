@@ -448,7 +448,16 @@ export default function Driver() {
             {!currentRide && (
               <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 w-64">
                 <button
-                  onClick={() => setIsAvailable(!isAvailable)}
+                  onClick={async () => {
+                    const newStatus = !isAvailable;
+                    try {
+                      await setDriverAvailability(driverId, newStatus);
+                      setIsAvailable(newStatus);
+                    } catch (error) {
+                      console.error("Failed to update availability", error);
+                      alert("Failed to update status");
+                    }
+                  }}
                   className={`w-full py-4 rounded-full font-bold text-lg shadow-lg transition-all ${isAvailable
                     ? 'bg-red-500 hover:bg-red-600 text-white'
                     : 'bg-green-500 hover:bg-green-600 text-white'

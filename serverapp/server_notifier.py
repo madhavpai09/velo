@@ -21,8 +21,8 @@ from database.models import Base, RideRequest, DriverInfo, MatchedRide
 
 Base.metadata.create_all(bind=engine)
 
-# Timeout for offering a ride to a driver (10 seconds)
-OFFER_TIMEOUT_SECONDS = 10
+# Timeout for offering a ride to a driver (60 seconds)
+OFFER_TIMEOUT_SECONDS = 60
 
 async def cleanup_stale_matches():
     """

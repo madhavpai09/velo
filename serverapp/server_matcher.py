@@ -126,126 +126,127 @@ async def matcher_loop():
             # Get database session
             db = SessionLocal()
             try:
-                # Find pending ride - PRIORITIZE school_pool
-                # First check for school_pool rides
-                ride = db.query(RideRequest).filter(
+                # Find pending rides - PRIORITIZE school_pool
+                # Fetch ALL pending rides to prevent blocking
+                school_rides = db.query(RideRequest).filter(
                     RideRequest.status == "pending",
                     RideRequest.ride_type == "school_pool"
-                ).first()
+                ).all()
                 
-                # If no school pool ride, check for any pending ride
-                if not ride:
-                    ride = db.query(RideRequest).filter(RideRequest.status == "pending").first()
+                normal_rides = db.query(RideRequest).filter(
+                    RideRequest.status == "pending",
+                    RideRequest.ride_type != "school_pool" # Avoid duplicates if we just did != school_pool
+                ).all()
                 
-                if not ride:
+                # Logic to avoid picking up school pool twice if simple query used
+                # Actually, simplest is fetch all pending and sort/filter in python or just concat
+                # But filter(...) is safer.
+                # Let's just fetch ALL pending and sort.
+                
+                all_pending = db.query(RideRequest).filter(RideRequest.status == "pending").all()
+                
+                if not all_pending:
                     print("   ℹ️  No pending rides")
-                    db.close()
                     continue
                 
-                logger.info(f"   📍 Found pending ride {ride.id} from user {ride.user_id}")
-                print(f"   📍 Found pending ride {ride.id} from user {ride.user_id}")
+                # Sort: School pool first, then by ID (FIFO)
+                all_pending.sort(key=lambda r: (r.ride_type != "school_pool", r.id))
                 
-                # Find available drivers (from database)
-                available_drivers = db.query(DriverInfo).filter(
-                    DriverInfo.available == True
-                ).all()
-                logger.info(f"   Query returned {len(available_drivers)} available drivers")
+                print(f"   📋 Processing {len(all_pending)} pending ride(s)...")
                 
-                # NEW: Filter for Safe Drivers if School Priority
-                if ride.ride_type == "school_priority":
-                    print(f"   🎓 School Priority Ride! Filtering for safe drivers...")
-                    available_drivers = [d for d in available_drivers if d.is_verified_safe]
+                for ride in all_pending:
+                    logger.info(f"   📍 Processing pending ride {ride.id} from user {ride.user_id}")
+                    # print(f"   📍 Processing pending ride {ride.id} from user {ride.user_id}")
+                    
+                    # 1. Get Available Drivers (Fresh Query)
+                    available_drivers = db.query(DriverInfo).filter(
+                        DriverInfo.available == True
+                    ).all()
+                    
+                    # 2. Filter out drivers who ALREADY have a pending/offered match
+                    # (To prevent double-booking a driver who hasn't accepted yet)
+                    active_matches = db.query(MatchedRide.driver_id).filter(
+                        MatchedRide.status.in_(["pending_notification", "offered"])
+                    ).all()
+                    busy_driver_ids = {m[0] for m in active_matches}
+                    
+                    available_drivers = [d for d in available_drivers if d.driver_id not in busy_driver_ids]
+                    
                     if not available_drivers:
-                        logger.info("   ⚠️  No SAFE drivers available for school ride")
-                        print("   ⚠️  No SAFE drivers available for school ride")
-                        db.close()
+                        logger.info("   ℹ️  No available (free) drivers in database")
+                        # print("   ℹ️  No available (free) drivers in database")
                         continue
-                
-                if not available_drivers:
-                    logger.info("   ℹ️  No available drivers in database")
-                    print("   ℹ️  No available drivers in database")
-                    db.close()
-                    continue
-                
-                # Get list of drivers who already declined this ride
-                declined_matches = db.query(MatchedRide).filter(
-                    MatchedRide.ride_id == ride.id,
-                    MatchedRide.status == "declined"
-                ).all()
-                declined_driver_ids = {m.driver_id for m in declined_matches}
-                
-                # Filter out declined drivers
-                candidates = [d for d in available_drivers if d.driver_id not in declined_driver_ids]
-                
-                if not candidates:
-                    logger.info(f"   ℹ️  All available drivers have declined ride {ride.id}")
-                    print(f"   ℹ️  All available drivers have declined ride {ride.id}")
-                    db.close()
-                    continue
 
-                print(f"   👥 Found {len(candidates)} candidate driver(s) (excluding {len(declined_driver_ids)} declined)")
-                
-                # Calculate distances and sort
-                driver_distances = []
-                for driver in candidates:
-                    dist = calculate_distance(ride.source_location, driver.current_location)
-                    driver_distances.append((driver, dist))
-                
-                # Sort by distance (nearest first)
-                driver_distances.sort(key=lambda x: x[1])
-                
-                # Check drivers in order of proximity
-                online_driver = None
-                for driver, dist in driver_distances:
-                    print(f"   🔌 Checking driver {driver.driver_id} ({dist:.2f} km away)...")
-                    if is_driver_online(driver.driver_id, db=db):
-                        online_driver = driver
-                        print(f"   ✅ Driver {driver.driver_id} is ONLINE and available!")
-                        break
-                    else:
-                        # Driver not found via port check - could be web driver or offline Python client
-                        # Since driver.available is True (we filtered for it), trust the database
-                        # This handles web drivers that don't have ports
-                        online_driver = driver
-                        print(f"   ✅ Driver {driver.driver_id} is available (web driver or database-only)")
-                        break
-                
-                if not online_driver:
-                    logger.info("   ℹ️  No online drivers found")
-                    print("   ℹ️  No online drivers found")
-                    db.close()
-                    continue
-                
-                # Found a match!
-                print(f"\n🎯 Match Found!")
-                print(f"   User ID: {ride.user_id}")
-                print(f"   Driver ID: {online_driver.driver_id}")
-                print(f"   From: {ride.source_location}")
-                print(f"   To: {ride.dest_location}")
-                print(f"   Type: {ride.ride_type}")
+                    # NEW: Filter for Safe Drivers if School Priority
+                    if ride.ride_type == "school_priority":
+                        available_drivers = [d for d in available_drivers if d.is_verified_safe]
+                        if not available_drivers:
+                            print("   ⚠️  No SAFE drivers available for school ride")
+                            continue
+                    
+                    # Get declined drivers for THIS ride
+                    declined_matches = db.query(MatchedRide).filter(
+                        MatchedRide.ride_id == ride.id,
+                        MatchedRide.status == "declined"
+                    ).all()
+                    declined_driver_ids = {m.driver_id for m in declined_matches}
+                    
+                    # Filter out declined drivers
+                    candidates = [d for d in available_drivers if d.driver_id not in declined_driver_ids]
+                    
+                    if not candidates:
+                        # Log only if this is the only ride, otherwise it's spammy
+                        if len(all_pending) == 1:
+                            print(f"   ℹ️  All available drivers have declined ride {ride.id}")
+                        continue
 
-                # Update statuses
-                ride.status = "broadcasting"
-                # Don't mark driver as unavailable yet - they might reject
-                # But to prevent double offering, we might want to? 
-                # For now, let's keep them available but the ride is 'broadcasting' so it won't be picked up again
-                
-                # Create matched ride record with status="pending_notification"
-                # This status is what the notifier looks for to send notifications
-                # FIX: Explicitly set created_at to ensure sync with Notifier
-                new_match = MatchedRide(
-                    user_id=ride.user_id,
-                    driver_id=online_driver.driver_id,
-                    ride_id=ride.id,
-                    status="pending_notification",
-                    created_at=datetime.utcnow()
-                )
-                db.add(new_match)
-                db.commit()
-                db.refresh(new_match)
-                
-                logger.info(f"   ✅ Ride offered to driver {online_driver.driver_id} (Match ID: {new_match.id})")
-                print(f"   ✅ Ride offered to driver {online_driver.driver_id} (Match ID: {new_match.id}, Time: {new_match.created_at})")
+                    print(f"   👥 Ride {ride.id}: Found {len(candidates)} candidate(s) (excluding {len(declined_driver_ids)} declined)")
+                    
+                    # Calculate distances and sort
+                    driver_distances = []
+                    for driver in candidates:
+                        dist = calculate_distance(ride.source_location, driver.current_location)
+                        driver_distances.append((driver, dist))
+                    
+                    driver_distances.sort(key=lambda x: x[1])
+                    
+                    # Check drivers in order of proximity
+                    online_driver = None
+                    for driver, dist in driver_distances:
+                        # print(f"   🔌 Checking driver {driver.driver_id} ({dist:.2f} km away)...")
+                        if is_driver_online(driver.driver_id, db=db):
+                            online_driver = driver
+                            print(f"   ✅ Ride {ride.id}: Match found! Driver {driver.driver_id} ({dist:.2f} km away)")
+                            break
+                        else:
+                            # Driver not found via port check OR heartbeat is stale
+                            # print(f"   ❌ Driver {driver.driver_id} is OFFLINE")
+                            continue
+                    
+                    if not online_driver:
+                        # print(f"   ℹ️  Ride {ride.id}: No ONLINE drivers found among candidates")
+                        continue
+                    
+                    # Found a match!
+                    # Update status
+                    ride.status = "broadcasting"
+                    
+                    # Create match
+                    new_match = MatchedRide(
+                        user_id=ride.user_id,
+                        driver_id=online_driver.driver_id,
+                        ride_id=ride.id,
+                        status="pending_notification",
+                        created_at=datetime.utcnow()
+                    )
+                    db.add(new_match)
+                    db.commit()
+                    db.refresh(new_match)
+                    
+                    print(f"   🚀 Match Created: Ride {ride.id} -> Driver {online_driver.driver_id} (ID: {new_match.id})")
+                    
+                    # Since we matched this ride, we should probably stop processing this ride
+                    # And maybe move to next? Yes.
                     
             finally:
                 db.close()

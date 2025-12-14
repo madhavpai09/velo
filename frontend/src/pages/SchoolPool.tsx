@@ -168,6 +168,33 @@ export default function SchoolPool() {
         }
     };
 
+    // NEW: View Subscription Details
+    const handleViewSubscription = async (sub: any) => {
+        setLoading(true);
+        try {
+            // Fetch fresh details with driver info
+            const response = await fetch(`http://localhost:8000/api/subscriptions/school-pass/${sub.id}`);
+            if (!response.ok) throw new Error("Failed to fetch details");
+            const details = await response.json();
+
+            setSubscriptionResult({
+                subscription_id: sub.id,
+                assigned_driver: details.driver ? {
+                    name: details.driver.name,
+                    phone: details.driver.phone,
+                    vehicle: "Assigned Vehicle" // API doesn't return vehicle details in this specific endpoint yet, fallback
+                } : null,
+                otp: sub.otp || '0000' // Use OTP from the list view which has today's OTP
+            });
+            setStep(6);
+        } catch (error) {
+            console.error("Failed to load subscription details", error);
+            alert("Failed to load details");
+        } finally {
+            setLoading(false);
+        }
+    };
+
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col">
             <div className="bg-yellow-400 p-6 shadow-md">
@@ -220,7 +247,10 @@ export default function SchoolPool() {
                             <div className="mb-8">
                                 <h2 className="text-xl font-bold mb-4">Your Active Subscriptions</h2>
                                 {subscriptions.map(sub => (
-                                    <div key={sub.id} className="bg-green-50 p-4 rounded-xl shadow-sm border border-green-200 mb-4">
+                                    <div key={sub.id}
+                                        onClick={() => handleViewSubscription(sub)}
+                                        className="bg-green-50 p-4 rounded-xl shadow-sm border border-green-200 mb-4 cursor-pointer hover:border-green-500 transition-colors"
+                                    >
                                         <div className="flex justify-between items-start">
                                             <div>
                                                 <h3 className="font-bold text-lg">{sub.student_name}</h3>
@@ -230,7 +260,10 @@ export default function SchoolPool() {
                                             <div className="text-right">
                                                 <span className="bg-green-200 text-green-800 px-2 py-1 rounded text-xs font-bold block mb-2">ACTIVE</span>
                                                 <button
-                                                    onClick={() => handleCancelSubscription(sub.id)}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleCancelSubscription(sub.id);
+                                                    }}
                                                     className="text-red-600 text-xs font-bold underline"
                                                 >
                                                     Cancel Pass
