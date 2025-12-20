@@ -1,10 +1,10 @@
-# VELO (Mini Uber)
+2# VELO (Mini Uber)
 
 A comprehensive ride-hailing platform built with modern technologies, featuring specialized services like the **School Pool Pass**.
 
-## 🌟 Key Features
+## Key Features
 
-### 🎒 School Pool Pass (Special Feature)
+### School Pool Pass (Special Feature)
 A dedicated subscription service for safe student transportation.
 -   **Safe Drivers**: Only verified "Safe Drivers" are assigned to school routes.
 -   **Subscriptions**: Monthly, Quarterly, or Annual passes.
@@ -12,7 +12,7 @@ A dedicated subscription service for safe student transportation.
 -   **OTP Verification**: Secure pickup and drop-off confirmation.
 -   **Optimized Routing**: efficient route planning for picking up multiple students.
 
-### 🚗 Core Ride Hailing
+### Core Ride Hailing
 -   **Real-time Booking**: Book Auto or Moto rides instantly.
 -   **Interactive Maps**: Visual route plotting using OSRM and Leaflet.
 -   **Live Driver Tracking**: See drivers moving on the map near you.
@@ -20,7 +20,7 @@ A dedicated subscription service for safe student transportation.
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 ### Frontend
 -   **Framework**: React (Vite)
@@ -38,7 +38,7 @@ A dedicated subscription service for safe student transportation.
 
 ---
 
-## 📋 Prerequisites
+## Prerequisites
 
 Before running the project, ensure you have the following installed:
 
@@ -48,7 +48,7 @@ Before running the project, ensure you have the following installed:
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### 1. Backend Setup
 
@@ -84,7 +84,7 @@ npm run dev
 # App runs at http://localhost:5173
 ```
 
-## 🔐 Credentials
+## Credentials
 
 -   **Rider Login**: Create a new account via the Signup page.
 -   **Driver Login**: Use Driver IDs like `8100`, `8101` (Auto-registered).
