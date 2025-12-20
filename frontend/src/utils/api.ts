@@ -2,6 +2,31 @@
 
 const API_BASE = 'http://localhost:8000/api';
 
+// Axios-like wrapper
+export const api = {
+  get: async (url: string, config?: any) => {
+    const headers = config?.headers || {};
+    const fullUrl = url.startsWith('http') ? url : `http://localhost:8000${url}`;
+    const res = await fetch(fullUrl, { headers });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return { data: await res.json() };
+  },
+  post: async (url: string, data?: any, config?: any) => {
+    const headers = { 'Content-Type': 'application/json', ...(config?.headers || {}) };
+    const fullUrl = url.startsWith('http') ? url : `http://localhost:8000${url}`;
+    const res = await fetch(fullUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    return { data: await res.json() };
+  }
+};
+
 export interface Location {
   lat: number;
   lng: number;

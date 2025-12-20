@@ -1,5 +1,5 @@
-import { useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from 'react-leaflet';
+import { useEffect, useState } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, useMapEvents, Polyline } from 'react-leaflet';
 import { LatLngExpression } from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
@@ -17,6 +17,23 @@ const DefaultIcon = L.icon({
 });
 
 L.Marker.prototype.options.icon = DefaultIcon;
+
+// OSRM Route Function
+const fetchRoute = async (start: { lat: number, lng: number }, end: { lat: number, lng: number }) => {
+  try {
+    const response = await fetch(
+      `http://router.project-osrm.org/route/v1/driving/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson`
+    );
+    const data = await response.json();
+    if (data.routes && data.routes.length > 0) {
+      // GeoJSON coordinates are [lng, lat], Leaflet needs [lat, lng]
+      return data.routes[0].geometry.coordinates.map((coord: number[]) => [coord[1], coord[0]]);
+    }
+  } catch (error) {
+    console.error("Error fetching route:", error);
+  }
+  return null;
+};
 
 // Custom icons for different marker types
 const pickupIcon = L.icon({
@@ -85,6 +102,18 @@ export default function MapView({
   driverLocation = null,
   height = '100%'
 }: MapViewProps) {
+  const [routePath, setRoutePath] = useState<LatLngExpression[]>([]);
+
+  useEffect(() => {
+    if (pickupMarker && dropoffMarker) {
+      fetchRoute(pickupMarker, dropoffMarker).then(path => {
+        if (path) setRoutePath(path as LatLngExpression[]);
+      });
+    } else {
+      setRoutePath([]);
+    }
+  }, [pickupMarker, dropoffMarker]);
+
   return (
     <div style={{ height, width: '100%' }}>
       <MapContainer
@@ -100,6 +129,11 @@ export default function MapView({
 
         {onLocationSelect && (
           <LocationMarker onSelect={onLocationSelect} />
+        )}
+
+        {/* Route Line */}
+        {routePath.length > 0 && (
+          <Polyline positions={routePath} color="blue" weight={5} opacity={0.7} />
         )}
 
         {/* Pickup Marker */}

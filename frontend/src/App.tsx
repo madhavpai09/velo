@@ -1,5 +1,9 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { AuthProvider } from './context/AuthContext';
+import ProtectedRoute from './shared/ProtectedRoute';
 import Landing from './pages/Landing';
+import Login from './pages/Login';
+import Signup from './pages/Signup';
 import Home from './pages/Home';
 import Ride from './pages/Ride';
 import Driver from './pages/Driver';
@@ -14,18 +18,26 @@ import Admin from './pages/Admin';
 export default function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Landing />} />
-        <Route path="/user" element={<Home />} />
-        <Route path="/ride" element={<Ride />} />
-        <Route path="/driver" element={<Driver />} />
-        <Route path="/safety" element={<Safety />} />
-        <Route path="/help" element={<HelpCenter />} />
-        <Route path="/school-pool" element={<SchoolPool />} />
-        <Route path="/school-pool/student/new" element={<StudentProfile />} />
-        <Route path="/school-pool/subscription/new" element={<SubscriptionSetup />} />
-        <Route path="/admin" element={<Admin />} />
-      </Routes>
+      <AuthProvider>
+        <Routes>
+          <Route path="/" element={<Landing />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/signup" element={<Signup />} />
+
+          {/* Public Pages */}
+          <Route path="/driver" element={<Driver />} />
+          <Route path="/safety" element={<Safety />} />
+          <Route path="/help" element={<HelpCenter />} />
+          <Route path="/admin" element={<Admin />} />
+
+          {/* Protected Routes */}
+          <Route path="/user" element={<ProtectedRoute><Home /></ProtectedRoute>} />
+          <Route path="/ride" element={<ProtectedRoute><Ride /></ProtectedRoute>} />
+          <Route path="/school-pool" element={<ProtectedRoute><SchoolPool /></ProtectedRoute>} />
+          <Route path="/school-pool/student/new" element={<ProtectedRoute><StudentProfile /></ProtectedRoute>} />
+          <Route path="/school-pool/subscription/new" element={<ProtectedRoute><SubscriptionSetup /></ProtectedRoute>} />
+        </Routes>
+      </AuthProvider>
     </BrowserRouter>
   );
 }
