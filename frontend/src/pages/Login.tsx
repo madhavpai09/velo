@@ -16,7 +16,7 @@ export default function Login() {
             // Use JSON endpoint to avoid form-data complexity
             const response = await api.post('/api/login/json', { email, password });
             await login(response.data.access_token);
-            navigate('/user');
+            navigate('/ride');
         } catch (err: any) {
             setError(err.message || 'Login failed');
         }

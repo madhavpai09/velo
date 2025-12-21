@@ -80,7 +80,7 @@ export default function Landing() {
                   </div>
                   <div className="pt-2">
                     <button
-                      onClick={() => navigate('/ride')}
+                      onClick={() => navigate('/login')}
                       className="bg-black text-white font-medium py-3 px-6 rounded-lg text-lg hover:bg-gray-800 transition-colors"
                     >
                       Request Now

@@ -86,9 +86,16 @@ export const createRideRequest = async (
   rideType: string = 'auto',
   fare?: number
 ): Promise<RideResponse> => {
+  const token = localStorage.getItem('token');
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
   const response = await fetch(`${API_BASE}/ride-request`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({
       source_location: `${pickup.lat},${pickup.lng}`,
       dest_location: `${dropoff.lat},${dropoff.lng}`,

@@ -1466,6 +1466,47 @@ def get_driver_details(driver_id: int, db: Session = Depends(get_db)):
         "penalty_count": driver.penalty_count,
         "assigned_subscriptions": subscription_details,
     }
+
+@app.get("/api/admin/users")
+def get_all_users_admin(db: Session = Depends(get_db)):
+    """Get all registered users with their ride statistics"""
+    users = db.query(User).all()
+    
+    result = []
+    for user in users:
+        # Count total rides for this user
+        total_rides = db.query(RideRequest).filter(
+            RideRequest.user_id == user.id
+        ).count()
+        
+        # Count completed rides
+        completed_rides = db.query(RideRequest).filter(
+            RideRequest.user_id == user.id,
+            RideRequest.status == "completed"
+        ).count()
+        
+        # Count active subscriptions
+        active_subscriptions = db.query(Subscription).filter(
+            Subscription.user_id == user.id,
+            Subscription.status == "active"
+        ).count()
+        
+        result.append({
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "phone_number": user.phone_number,
+            "total_rides": total_rides,
+            "completed_rides": completed_rides,
+            "active_subscriptions": active_subscriptions,
+            "created_at": user.created_at.isoformat() if user.created_at else None
+        })
+    
+    return {
+        "total_users": len(result),
+        "users": result
+    }
+
 if __name__ == "__main__":
     import uvicorn
     print("\n" + "="*60)

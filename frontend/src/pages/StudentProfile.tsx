@@ -1,16 +1,13 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 
 export default function StudentProfile() {
     const navigate = useNavigate();
+    const { user } = useAuth();
     const [loading, setLoading] = useState(false);
 
-    // Get userId from URL params if available
-    const urlParams = new URLSearchParams(window.location.search);
-    const userIdFromUrl = urlParams.get('userId');
-
     const [formData, setFormData] = useState({
-        userId: userIdFromUrl || '',
         name: '',
         school_name: '',
         school_address: '',
@@ -20,13 +17,19 @@ export default function StudentProfile() {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+
+        if (!user?.id) {
+            alert("You must be logged in to create a student profile.");
+            return;
+        }
+
         setLoading(true);
         try {
             const response = await fetch('http://localhost:8000/api/student/create', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    user_id: parseInt(formData.userId),
+                    user_id: user.id,
                     name: formData.name,
                     school_name: formData.school_name,
                     school_address: formData.school_address,
@@ -49,6 +52,17 @@ export default function StudentProfile() {
         }
     };
 
+    if (!user) {
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-gray-50">
+                <div className="text-center">
+                    <h2 className="text-2xl font-bold mb-4">You are not logged in</h2>
+                    <button onClick={() => navigate('/')} className="text-blue-600 font-bold underline">Go to Login</button>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col">
             <div className="bg-white p-6 shadow-sm flex items-center gap-4">
@@ -58,18 +72,6 @@ export default function StudentProfile() {
 
             <div className="p-6">
                 <form onSubmit={handleSubmit} className="bg-white p-6 rounded-xl shadow-sm space-y-4">
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Parent/User ID</label>
-                        <input
-                            required
-                            type="number"
-                            value={formData.userId}
-                            onChange={e => setFormData({ ...formData, userId: e.target.value })}
-                            className="w-full p-3 border rounded-lg"
-                            placeholder="e.g. 7000, 7001, 7002"
-                        />
-                        <p className="text-xs text-gray-500 mt-1">Enter the parent's user ID to link this student</p>
-                    </div>
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">Student Name</label>
                         <input

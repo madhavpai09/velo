@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { getSchools, getSchoolRoutes, createSchoolPassSubscription, School, SchoolRoute, RouteStop } from '../utils/api';
+import { useAuth } from '../context/AuthContext';
 
 export default function SchoolPool() {
     const navigate = useNavigate();
+    const { user } = useAuth();
     const [step, setStep] = useState(1);
     const [schools, setSchools] = useState<School[]>([]);
     const [selectedSchool, setSelectedSchool] = useState<School | null>(null);
@@ -12,23 +14,19 @@ export default function SchoolPool() {
     const [selectedStop, setSelectedStop] = useState<RouteStop | null>(null);
     const [students, setStudents] = useState<any[]>([]);
     const [selectedStudent, setSelectedStudent] = useState<any | null>(null);
-    const [subscriptions, setSubscriptions] = useState<any[]>([]); // NEW
+    const [subscriptions, setSubscriptions] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
-
-    // User ID management
-    const [userId, setUserId] = useState<number | null>(null);
-    const [showUserIdInput, setShowUserIdInput] = useState(true);
 
     useEffect(() => {
         loadSchools();
     }, []);
 
     useEffect(() => {
-        if (userId) {
+        if (user?.id) {
             fetchStudents();
-            fetchSubscriptions(); // NEW
+            fetchSubscriptions();
         }
-    }, [userId]);
+    }, [user]);
 
     const loadSchools = async () => {
         try {
@@ -40,9 +38,9 @@ export default function SchoolPool() {
     };
 
     const fetchStudents = async () => {
-        if (!userId) return;
+        if (!user?.id) return;
         try {
-            const response = await fetch(`http://localhost:8000/api/user/${userId}/students`);
+            const response = await fetch(`http://localhost:8000/api/user/${user.id}/students`);
             if (response.ok) {
                 const data = await response.json();
                 setStudents(data.students);
@@ -52,11 +50,10 @@ export default function SchoolPool() {
         }
     };
 
-    // NEW: Fetch Subscriptions
     const fetchSubscriptions = async () => {
-        if (!userId) return;
+        if (!user?.id) return;
         try {
-            const response = await fetch(`http://localhost:8000/api/user/${userId}/subscriptions`);
+            const response = await fetch(`http://localhost:8000/api/user/${user.id}/subscriptions`);
             if (response.ok) {
                 const data = await response.json();
                 setSubscriptions(data.subscriptions);
@@ -66,7 +63,6 @@ export default function SchoolPool() {
         }
     };
 
-    // NEW: Cancel Subscription
     const handleCancelSubscription = async (subId: number) => {
         if (!confirm('Are you sure you want to cancel this subscription?')) return;
         try {
@@ -84,9 +80,8 @@ export default function SchoolPool() {
         }
     };
 
-    // NEW: Delete Student
     const handleDeleteStudent = async (studentId: number, e: React.MouseEvent) => {
-        e.stopPropagation(); // Prevent selection
+        e.stopPropagation();
         if (!confirm('Are you sure you want to delete this student profile?')) return;
         try {
             const response = await fetch(`http://localhost:8000/api/students/${studentId}`, {
@@ -136,12 +131,12 @@ export default function SchoolPool() {
     const [subscriptionResult, setSubscriptionResult] = useState<any>(null);
 
     const handleSubscribe = async () => {
-        if (!selectedStudent || !selectedRoute || !selectedStop || !userId) return;
+        if (!selectedStudent || !selectedRoute || !selectedStop || !user?.id) return;
 
         setLoading(true);
         try {
             const result = await createSchoolPassSubscription({
-                user_id: userId,
+                user_id: user.id,
                 student_id: selectedStudent.id,
                 route_id: selectedRoute.id,
                 stop_id: selectedStop.id,
@@ -150,7 +145,7 @@ export default function SchoolPool() {
             });
 
             // Fetch the OTP from the subscriptions endpoint
-            const subsResponse = await fetch(`http://localhost:8000/api/user/${userId}/subscriptions`);
+            const subsResponse = await fetch(`http://localhost:8000/api/user/${user.id}/subscriptions`);
             const subsData = await subsResponse.json();
             const thisSub = subsData.subscriptions.find((s: any) => s.id === result.subscription_id);
 
@@ -159,7 +154,7 @@ export default function SchoolPool() {
                 otp: thisSub?.otp || '0000'
             });
             setStep(6);
-            fetchSubscriptions(); // Refresh list
+            fetchSubscriptions();
         } catch (error) {
             console.error('Failed to subscribe:', error);
             alert('Failed to create subscription');
@@ -168,11 +163,9 @@ export default function SchoolPool() {
         }
     };
 
-    // NEW: View Subscription Details
     const handleViewSubscription = async (sub: any) => {
         setLoading(true);
         try {
-            // Fetch fresh details with driver info
             const response = await fetch(`http://localhost:8000/api/subscriptions/school-pass/${sub.id}`);
             if (!response.ok) throw new Error("Failed to fetch details");
             const details = await response.json();
@@ -182,9 +175,9 @@ export default function SchoolPool() {
                 assigned_driver: details.driver ? {
                     name: details.driver.name,
                     phone: details.driver.phone,
-                    vehicle: "Assigned Vehicle" // API doesn't return vehicle details in this specific endpoint yet, fallback
+                    vehicle: "Assigned Vehicle"
                 } : null,
-                otp: sub.otp || '0000' // Use OTP from the list view which has today's OTP
+                otp: sub.otp || '0000'
             });
             setStep(6);
         } catch (error) {
@@ -195,11 +188,27 @@ export default function SchoolPool() {
         }
     };
 
+    if (!user) {
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-gray-50">
+                <div className="text-center">
+                    <h2 className="text-2xl font-bold mb-4">Please Login Required</h2>
+                    <button
+                        onClick={() => navigate('/')}
+                        className="bg-black text-white px-6 py-3 rounded-xl font-bold"
+                    >
+                        Go to Login
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col">
             <div className="bg-yellow-400 p-6 shadow-md">
                 <div className="flex items-center gap-4 mb-4">
-                    <button onClick={() => step > 1 && step < 6 ? setStep(step - 1) : navigate('/')} className="text-2xl">←</button>
+                    <button onClick={() => step > 1 && step < 6 ? setStep(step - 1) : navigate('/home')} className="text-2xl">←</button>
                     <h1 className="text-2xl font-bold">School Pool Subscription</h1>
                 </div>
                 {step < 6 && (
@@ -212,35 +221,7 @@ export default function SchoolPool() {
             </div>
 
             <div className="flex-1 p-6 overflow-y-auto">
-                {showUserIdInput && (
-                    <div className="max-w-md mx-auto mt-20">
-                        <div className="bg-white p-8 rounded-xl shadow-lg">
-                            <h2 className="text-2xl font-bold mb-4">Enter Your User ID</h2>
-                            <p className="text-gray-600 mb-6">Please enter your user ID to view your students and subscriptions.</p>
-                            <input
-                                type="number"
-                                value={userId || ''}
-                                onChange={(e) => setUserId(parseInt(e.target.value) || null)}
-                                placeholder="e.g., 7000, 7001, 7002"
-                                className="w-full p-4 border-2 rounded-lg mb-4 text-lg"
-                            />
-                            <button
-                                onClick={() => {
-                                    if (userId) {
-                                        setShowUserIdInput(false);
-                                    } else {
-                                        alert('Please enter a valid User ID');
-                                    }
-                                }}
-                                className="w-full bg-black text-white py-4 rounded-xl font-bold text-lg hover:bg-gray-800"
-                            >
-                                Continue
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {!showUserIdInput && step === 1 && (
+                {step === 1 && (
                     <div className="space-y-4">
                         {/* CURRENT SUBSCRIPTIONS */}
                         {subscriptions.length > 0 && (
@@ -321,7 +302,7 @@ export default function SchoolPool() {
                 {step === 4 && (
                     <div className="space-y-4">
                         <h2 className="text-xl font-bold">Select Student</h2>
-                        <p className="text-sm text-gray-500">User ID: {userId} • {students.length} student(s) found</p>
+                        <p className="text-sm text-gray-500">Student Profiles • {students.length} found</p>
 
                         {/* WARNING for Max Students */}
                         {students.length >= 3 && (
@@ -332,12 +313,6 @@ export default function SchoolPool() {
                         )}
 
                         {students.map(student => {
-                            // Check if student is already subscribed (Need to fetch subscriptions first or pass them)
-                            // For MVP, we'll try to subscribe and handle the error message gracefully, 
-                            // OR we can fetch subscriptions in fetchStudents.
-                            // Let's rely on the backend check for duplicates, which we just added.
-                            // But for better UX, let's assume we can add a check if we extended the student object.
-
                             return (
                                 <div key={student.id} onClick={() => handleStudentSelect(student)} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 cursor-pointer hover:border-black flex justify-between items-center group">
                                     <div>
@@ -356,7 +331,7 @@ export default function SchoolPool() {
                         })}
 
                         {students.length < 3 ? (
-                            <button onClick={() => navigate(`/school-pool/student/new?userId=${userId}`)} className="w-full py-4 border-2 border-dashed border-gray-300 rounded-xl text-gray-500 font-bold hover:border-black hover:text-black transition-colors">
+                            <button onClick={() => navigate(`/school-pool/student/new`)} className="w-full py-4 border-2 border-dashed border-gray-300 rounded-xl text-gray-500 font-bold hover:border-black hover:text-black transition-colors">
                                 + Add New Student
                             </button>
                         ) : (
@@ -464,7 +439,7 @@ export default function SchoolPool() {
                         </div>
 
                         <button
-                            onClick={() => navigate('/')}
+                            onClick={() => navigate('/home')}
                             className="w-full bg-black text-white py-4 rounded-xl font-bold text-lg"
                         >
                             Done

@@ -28,10 +28,11 @@ export default function App() {
           <Route path="/driver" element={<Driver />} />
           <Route path="/safety" element={<Safety />} />
           <Route path="/help" element={<HelpCenter />} />
+          <Route path="/about" element={<AboutUs />} />
           <Route path="/admin" element={<Admin />} />
 
           {/* Protected Routes */}
-          <Route path="/user" element={<ProtectedRoute><Home /></ProtectedRoute>} />
+          <Route path="/home" element={<ProtectedRoute><Home /></ProtectedRoute>} />
           <Route path="/ride" element={<ProtectedRoute><Ride /></ProtectedRoute>} />
           <Route path="/school-pool" element={<ProtectedRoute><SchoolPool /></ProtectedRoute>} />
           <Route path="/school-pool/student/new" element={<ProtectedRoute><StudentProfile /></ProtectedRoute>} />

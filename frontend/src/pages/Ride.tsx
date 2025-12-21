@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import MapView from '../shared/MapView';
+import { useAuth } from '../context/AuthContext';
 import {
   createRideRequest,
   getAvailableDrivers,
@@ -22,6 +23,7 @@ interface AssignedDriver {
 
 export default function Ride() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [searchParams] = useSearchParams();
   const [pickupLocation, setPickupLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [dropoffLocation, setDropoffLocation] = useState<{ lat: number; lng: number } | null>(null);
@@ -31,8 +33,6 @@ export default function Ride() {
   const [selectionMode, setSelectionMode] = useState<'pickup' | 'dropoff'>('pickup');
   const [assignedDriver, setAssignedDriver] = useState<AssignedDriver | null>(null);
   const [waitingForDriver, setWaitingForDriver] = useState(false);
-  const [userId, setUserId] = useState<number | null>(null);
-  const [showUserIdInput, setShowUserIdInput] = useState(true);
   const [selectedRideType, setSelectedRideType] = useState<'auto' | 'school_pool' | 'school_priority'>('auto');
   const [showRatingModal, setShowRatingModal] = useState(false);
   const [rating, setRating] = useState(0);
@@ -56,11 +56,11 @@ export default function Ride() {
   }, []);
 
   useEffect(() => {
-    if (!userId) return;
+    if (!user?.id) return;
 
     const pollInterval = setInterval(async () => {
       try {
-        const response = await fetch(`http://localhost:8000/api/user/${userId}/ride-status`);
+        const response = await fetch(`http://localhost:8000/api/user/${user.id}/ride-status`);
         if (response.ok) {
           const data = await response.json();
 
@@ -117,7 +117,7 @@ export default function Ride() {
     }, 2000);
 
     return () => clearInterval(pollInterval);
-  }, [userId, assignedDriver]);
+  }, [user, assignedDriver]);
 
   const fetchDrivers = async () => {
     const driverData = await getAvailableDrivers();
@@ -158,7 +158,7 @@ export default function Ride() {
       const response = await createRideRequest(
         pickupLocation,
         dropoffLocation,
-        userId || 7000,
+        user?.id || 7000,
         selectedRideType,
         fare
       );
@@ -198,38 +198,16 @@ export default function Ride() {
     setSelectionMode('pickup');
   };
 
-  if (showUserIdInput) {
+  if (!user) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex items-center justify-center p-4 relative overflow-hidden">
-        {/* Decorative background elements */}
-        <div className="absolute top-0 left-0 w-96 h-96 bg-blue-200 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob"></div>
-        <div className="absolute top-0 right-0 w-96 h-96 bg-purple-200 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-2000"></div>
-        <div className="absolute bottom-0 left-1/2 w-96 h-96 bg-pink-200 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-blob animation-delay-4000"></div>
-
-        <div className="bg-white/80 backdrop-blur-lg p-8 rounded-3xl shadow-2xl max-w-md w-full border border-white/20 relative z-10">
-          <div className="text-center mb-8">
-            <div className="inline-block p-4 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl mb-4">
-              <span className="text-4xl">🛺</span>
-            </div>
-            <h2 className="text-3xl font-bold mb-2 bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">Welcome to VELO</h2>
-            <p className="text-gray-600">Enter your User ID to continue</p>
-          </div>
-
-          <input
-            type="number"
-            value={userId || ''}
-            onChange={(e) => setUserId(parseInt(e.target.value) || null)}
-            placeholder="e.g., 7000"
-            className="w-full bg-gray-50 p-4 rounded-xl mb-4 text-lg focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-200 transition-all"
-          />
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <h2 className="text-2xl font-bold mb-4">Please Login Required</h2>
           <button
-            onClick={() => {
-              if (userId) setShowUserIdInput(false);
-              else alert('Please enter a valid User ID');
-            }}
-            className="w-full bg-gradient-to-r from-blue-600 to-purple-600 text-white py-4 rounded-xl font-medium text-lg hover:shadow-lg hover:scale-[1.02] transition-all duration-200"
+            onClick={() => navigate('/login')}
+            className="bg-black text-white px-6 py-3 rounded-xl font-bold"
           >
-            Continue
+            Go to Login
           </button>
         </div>
       </div>
@@ -274,7 +252,7 @@ export default function Ride() {
                 return;
               }
               try {
-                await rateDriver(lastCompletedRide!.driverId, userId!, lastCompletedRide!.id, rating, ratingComment);
+                await rateDriver(lastCompletedRide!.driverId, user!.id, lastCompletedRide!.id, rating, ratingComment);
                 setShowRatingModal(false);
                 setRating(0);
                 setRatingComment('');
@@ -302,7 +280,7 @@ export default function Ride() {
         <div className="p-6 border-b border-gray-100 flex justify-between items-center">
           <div className="text-2xl font-normal tracking-tight cursor-pointer" onClick={() => navigate('/')}>VELO Cabs</div>
           <div className="flex items-center gap-3">
-            <div className="text-sm font-medium">User {userId}</div>
+            <div className="text-sm font-medium">{user.name}</div>
             <div className="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center">👤</div>
           </div>
         </div>
