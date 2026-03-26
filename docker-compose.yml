@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: mini_uber_db_dev
+    environment:
+      POSTGRES_USER: ${DB_USER:-Mini_Uber_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_DB: ${DB_NAME:-Mini_Uber}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-Mini_Uber_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mini_uber_network
+    labels:
+      - "com.example.description=Mini Uber PostgreSQL Database"
+
+  # Backend API
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: mini_uber_api_dev
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-Mini_Uber_user}:${DB_PASSWORD:-password}@postgres:5432/${DB_NAME:-Mini_Uber}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      ALGORITHM: ${ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-43200}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173", "http://localhost:3000"]}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./serverapp:/app
+    command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - mini_uber_network
+    labels:
+      - "com.example.description=Mini Uber FastAPI Backend"
+
+  # Frontend Application
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: mini_uber_web_dev
+    environment:
+      VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000/api}
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      - api
+    networks:
+      - mini_uber_network
+    labels:
+      - "com.example.description=Mini Uber React Frontend"
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  mini_uber_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

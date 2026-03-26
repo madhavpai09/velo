@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 import random
@@ -10,6 +10,7 @@ from pydantic import BaseModel, EmailStr
 import sys
 import sys
 import os
+import logging
 
 sys.path.insert(0, os.path.dirname(__file__))
 from sqlalchemy.orm import Session
@@ -17,6 +18,12 @@ from sqlalchemy import func
 from database.connections import SessionLocal, engine
 from database.models import Base, RideRequest, DriverInfo, MatchedRide, StudentProfile, Subscription, SubscriptionSchedule, DriverRating, User
 from models.schemas import RideCreate, DriverCreate, UpdateMatchPayload
+from config import get_settings
+from logging_config import setup_logging
+from auth.password import PasswordValidator
+from auth.rate_limit import RateLimiter
+from auth.tokens import TokenManager
+from auth.oauth import GoogleOAuthHandler, GitHubOAuthHandler
 
 # NEW: Schemas for School Pool
 class StudentCreate(BaseModel):
@@ -42,6 +49,17 @@ class RatingCreate(BaseModel):
     ride_id: int
     rating: int
     comment: str = None
+
+# Initialize logging and settings
+logger = setup_logging()
+settings = get_settings()
+
+# Initialize authentication modules
+password_validator = PasswordValidator()
+rate_limiter = RateLimiter()
+token_manager = TokenManager()  # Gets settings automatically
+google_oauth = GoogleOAuthHandler()
+github_oauth = GitHubOAuthHandler()
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -85,6 +103,20 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
 
 # Auth Schemas
+
+class TokenRefreshRequest(BaseModel):
+    refresh_token: str
+
+class OAuthCallbackRequest(BaseModel):
+    id_token: str
+    provider: str = "google"  # "google" or "github"
+
+class OAuthUserInfo(BaseModel):
+    email: str
+    name: Optional[str] = None
+    picture: Optional[str] = None
+    provider: str
+
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
@@ -97,7 +129,15 @@ class UserLogin(BaseModel):
 
 class Token(BaseModel):
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str
+
+class TokenRefreshRequest(BaseModel):
+    refresh_token: str
+
+class OAuthCallbackRequest(BaseModel):
+    id_token: str
+    provider: str = "google"
 
 class TokenData(BaseModel):
     email: Optional[str] = None
@@ -149,60 +189,118 @@ def read_root():
 # NEW: Auth Endpoints
 @app.post("/api/signup", response_model=Token)
 def signup(user: UserCreate, db: Session = Depends(get_db)):
+    """Register a new user with enhanced password validation"""
     db_user = db.query(User).filter(User.email == user.email).first()
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Validate password strength
+    is_valid, error_msg = password_validator.validate(user.password)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_msg)
     
     hashed_password = get_password_hash(user.password)
     new_user = User(
         email=user.email,
         hashed_password=hashed_password,
         full_name=user.full_name,
-        phone_number=user.phone
+        phone_number=user.phone,
+        auth_provider="local",
+        is_email_verified=False
     )
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
     
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": new_user.email}, expires_delta=access_token_expires
+    # Create token pair (access + refresh)
+    access_token, refresh_token = token_manager.create_token_pair(
+        user_id=new_user.id,
+        email=new_user.email
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
 
 @app.post("/api/login", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    # Compatible with OAuth2 standard form
+def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    """Standard OAuth2 login endpoint with rate limiting and dual-token response"""
+    client_ip = request.client.host
+    
+    # Check rate limiting
+    is_allowed, remaining, reset_seconds = rate_limiter.is_allowed(client_ip)
+    if not is_allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many login attempts. Try again in {reset_seconds} seconds",
+            headers={"Retry-After": str(reset_seconds)}
+        )
+    
     user = db.query(User).filter(User.email == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
+    
+    if not user or not user.hashed_password:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+    if not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Update last login
+    user.last_login = datetime.utcnow()
+    db.commit()
+    
+    # Create token pair (access + refresh)
+    access_token, refresh_token = token_manager.create_token_pair(
+        user_id=user.id,
+        email=user.email
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
 
 @app.post("/api/login/json", response_model=Token)
-def login_json(user_login: UserLogin, db: Session = Depends(get_db)):
-    # JSON compatible endpoint for frontend
+def login_json(user_login: UserLogin, request: Request, db: Session = Depends(get_db)):
+    """JSON login endpoint with rate limiting and dual-token response"""
+    client_ip = request.client.host
+    
+    # Check rate limiting
+    is_allowed, remaining, reset_seconds = rate_limiter.is_allowed(client_ip)
+    if not is_allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many login attempts. Try again in {reset_seconds} seconds",
+            headers={"Retry-After": str(reset_seconds)}
+        )
+    
     user = db.query(User).filter(User.email == user_login.email).first()
-    if not user or not verify_password(user_login.password, user.hashed_password):
+    
+    # Validate password and auth provider
+    if not user or not user.hashed_password:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+    if not verify_password(user_login.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Update last login
+    user.last_login = datetime.utcnow()
+    db.commit()
+    
+    # Create token pair (access + refresh)
+    access_token, refresh_token = token_manager.create_token_pair(
+        user_id=user.id,
+        email=user.email
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
 
 @app.get("/api/me")
 def read_users_me(current_user: User = Depends(get_current_user)):
@@ -212,6 +310,126 @@ def read_users_me(current_user: User = Depends(get_current_user)):
         "name": current_user.full_name,
         "phone": current_user.phone_number
     }
+
+
+@app.post("/api/auth/refresh", response_model=Token)
+def refresh_token_endpoint(req: TokenRefreshRequest, db: Session = Depends(get_db)):
+    """Refresh access token using refresh token"""
+    try:
+        payload = token_manager.validate_refresh_token(req.refresh_token)
+        user_id = payload.get("user_id")
+        
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Create new token pair
+        access_token, refresh_token = token_manager.create_token_pair(
+            user_id=user.id,
+            email=user.email
+        )
+        return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+@app.post("/api/auth/google")
+async def google_login(req: OAuthCallbackRequest, db: Session = Depends(get_db)):
+    """Google OAuth2 login handler"""
+    try:
+        # Verify Google ID token
+        user_info = google_oauth.verify_id_token(req.id_token)
+        if not user_info:
+            raise HTTPException(status_code=400, detail="Invalid Google token")
+        
+        # Find or create user
+        user = db.query(User).filter(User.email == user_info.email).first()
+        if not user:
+            # Auto-create user from Google info
+            user = User(
+                email=user_info.email,
+                full_name=user_info.name or user_info.email.split("@")[0],
+                auth_provider="google",
+                provider_id=user_info.email,
+                hashed_password=None,  # OAuth users don't have passwords
+                is_email_verified=True  # Google verifies email
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        else:
+            # Update provider info if needed
+            if not user.auth_provider:
+                user.auth_provider = "google"
+                user.provider_id = user_info.email
+                db.commit()
+        
+        # Update last login
+        user.last_login = datetime.utcnow()
+        db.commit()
+        
+        # Create token pair
+        access_token, refresh_token = token_manager.create_token_pair(
+            user_id=user.id,
+            email=user.email
+        )
+        return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
+    except Exception as e:
+        logger.error(f"Google login failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Google authentication failed: {str(e)}")
+
+@app.post("/api/auth/github")
+async def github_login(req: OAuthCallbackRequest, db: Session = Depends(get_db)):
+    """GitHub OAuth2 login handler"""
+    try:
+        # Verify GitHub access token and get user info
+        user_info = github_oauth.get_user_info(req.id_token)  # Note: id_token is actually access_token for GitHub
+        if not user_info:
+            raise HTTPException(status_code=400, detail="Invalid GitHub token")
+        
+        # Find or create user
+        user = db.query(User).filter(User.email == user_info.email).first()
+        if not user:
+            # Auto-create user from GitHub info
+            user = User(
+                email=user_info.email,
+                full_name=user_info.name or user_info.email.split("@")[0],
+                auth_provider="github",
+                provider_id=user_info.email,
+                hashed_password=None,  # OAuth users don't have passwords
+                is_email_verified=True  # GitHub verifies email
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        else:
+            # Update provider info if needed
+            if not user.auth_provider:
+                user.auth_provider = "github"
+                user.provider_id = user_info.email
+                db.commit()
+        
+        # Update last login
+        user.last_login = datetime.utcnow()
+        db.commit()
+        
+        # Create token pair
+        access_token, refresh_token = token_manager.create_token_pair(
+            user_id=user.id,
+            email=user.email
+        )
+        return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
+    except Exception as e:
+        logger.error(f"GitHub login failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"GitHub authentication failed: {str(e)}")
+
 
 @app.post("/driver/register")
 def register_driver(driver: DriverRegister, db: Session = Depends(get_db)):

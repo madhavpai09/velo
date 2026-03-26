@@ -8,16 +8,22 @@ from .connections import Base
 
 # NEW: Application User Model (Riders)
 class User(Base):
-    """Authenticated user model"""
+    """Authenticated user model with OAuth support"""
     __tablename__ = "users"
     
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
+    hashed_password = Column(String, nullable=True)  # Made nullable for OAuth users
     full_name = Column(String, nullable=True)
     phone_number = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+    
+    # OAuth Support Fields
+    auth_provider = Column(String, default="local")  # 'local', 'google', 'github'
+    provider_id = Column(String, nullable=True)  # ID from OAuth provider
+    last_login = Column(DateTime, nullable=True)  # Track last login time
+    is_email_verified = Column(Boolean, default=False)  # Email verification status
 
 class RideRequest(Base):
     """Ride request model with all required fields"""
